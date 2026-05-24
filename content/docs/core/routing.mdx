@@ -1,0 +1,147 @@
+---
+title: Routing
+description: Ginject parses controller method names into HTTP routes automatically. Learn the full token reference, versioning, and wildcard patterns.
+---
+
+# Routing
+
+Ginject derives HTTP routes from controller method names at startup. No annotations, struct tags, or code generation are needed. The method name is tokenized on underscores and each token has a semantic meaning.
+
+## Token Reference
+
+| Token | HTTP Method / Meaning | Example method → route |
+|---|---|---|
+| `READ` | `GET` | `READ` → `GET /` |
+| `CREATE` | `POST` | `CREATE` → `POST /` |
+| `UPDATE` | `PUT` | `UPDATE` → `PUT /` |
+| `MODIFY` | `PATCH` | `MODIFY` → `PATCH /` |
+| `DELETE` | `DELETE` | `DELETE` → `DELETE /` |
+| `PREFLIGHT` | `OPTIONS` | `PREFLIGHT` → `OPTIONS /` |
+| `BY` | Path parameter (`:token`) | `READ_BY_ID` → `GET /:id` |
+| `AND` | Additional path segment | `READ_BY_ID_AND_NAME` → `GET /:id/:name` |
+| `OF` | Named sub-resource | `READ_OF_USER` → `GET /user` |
+| `ANY` | Wildcard (`*`) | `READ_ANY` → `GET /*` |
+| `VERSION` | API version prefix | `READ_VERSION_1` → versioned route |
+| `FILE` | Static file serving | `READ_FILE` → static file handler |
+
+## Basic Routes
+
+```go
+type UserController struct {
+    common.REST
+}
+
+func (c UserController) NewController() common.Controller {
+    c.Prefix("users")
+    return c
+}
+
+func (c *UserController) READ() {}                    // GET  /users
+func (c *UserController) CREATE() {}                  // POST /users
+func (c *UserController) READ_BY_ID() {}              // GET  /users/:id
+func (c *UserController) UPDATE_BY_ID() {}            // PUT  /users/:id
+func (c *UserController) MODIFY_BY_ID() {}            // PATCH /users/:id
+func (c *UserController) DELETE_BY_ID() {}            // DELETE /users/:id
+```
+
+## Multiple Path Parameters
+
+Chain `BY` and `AND` for multiple params in the same route:
+
+```go
+func (c *UserController) READ_BY_ID_AND_TYPE() {}
+// GET /users/:id/:type
+
+func (c *UserController) READ_BY_ORG_AND_REPO_AND_BRANCH() {}
+// GET /users/:org/:repo/:branch
+```
+
+## Sub-Resources with OF
+
+```go
+func (c *UserController) READ_OF_PROFILE() {}
+// GET /users/profile
+
+func (c *UserController) READ_OF_PROFILE_BY_ID() {}
+// GET /users/profile/:id
+```
+
+## Wildcard Routes
+
+```go
+func (c *UserController) READ_ANY() {}
+// GET /users/*
+```
+
+Wildcards match all remaining path segments.
+
+## Static File Serving
+
+```go
+func (c *StaticController) READ_FILE() {}
+// Serves files from the configured public directory
+```
+
+## Route Versioning
+
+Enable versioning on the app before creating:
+
+```go
+import "github.com/dangduoc08/ginject/versioning"
+
+app := core.New()
+app.EnableVersioning(versioning.URL) // or versioning.Header, versioning.Query
+app.Create(AppModule)
+```
+
+Then append `_VERSION_N` to method names:
+
+```go
+func (c *UserController) READ_VERSION_1() {}  // GET /v1/users
+func (c *UserController) READ_VERSION_2() {}  // GET /v2/users
+```
+
+Versioning modes:
+
+| Mode | URL pattern |
+|---|---|
+| `versioning.URL` | `/v1/users`, `/v2/users` |
+| `versioning.Header` | `Accept-Version: 1` header |
+| `versioning.Query` | `/users?version=1` |
+
+## Global Prefix
+
+Set a global prefix that applies to all routes in the app:
+
+```go
+app.SetGlobalPrefix("api")
+// All routes become /api/users, /api/products, etc.
+```
+
+## Path Parameters
+
+Access path parameters via `ctx.Param` in handler arguments:
+
+```go
+func (c *UserController) READ_BY_ID(exec *ctx.ExecutionContext, param ctx.Param) User {
+    id := param.Get("id")
+    return c.UserService.FindOne(exec, id)
+}
+```
+
+## Query Parameters
+
+Access query parameters via `ctx.Query`:
+
+```go
+func (c *UserController) READ(exec *ctx.ExecutionContext, query ctx.Query) []User {
+    page := query.Get("page")    // e.g. ?page=2
+    limit := query.Get("limit")  // e.g. ?limit=20
+    return c.UserService.FindAll(exec, page, limit)
+}
+```
+
+## Naming Conventions
+
+- Tokens are case-insensitive in the parsing, but **must be uppercase** in the method name for Go to export them.
+- All tokens between `BY`, `AND`, and `OF` are lowercased for the actual path segment. `READ_BY_USER_ID` produces `/:userID` (camelCased from the multi-word segment).

@@ -1,0 +1,68 @@
+---
+title: Introduction
+description: Ginject is a NestJS-inspired dependency-injection web framework for Go. Module-based architecture with production-grade execution context propagation.
+---
+
+# Introduction
+
+Ginject is a web framework for Go that brings the architectural patterns of [NestJS](https://nestjs.com) to the Go ecosystem — dependency injection, module composition, declarative routing, and a layered request pipeline — while staying idiomatic to Go's concurrency and context models.
+
+## Philosophy
+
+Ginject is built around three beliefs:
+
+1. **Architecture beats performance tweaks** — organizing code into modules and controllers makes it easier to test, extend, and reason about than a flat handler registry.
+2. **Context propagation is non-negotiable** — every goroutine spawned during a request must be reachable by `context.Done()`, or you have goroutine leaks.
+3. **Convention over configuration** — naming a handler `READ_BY_ID` should be enough to register `GET /:id`. No annotations and no build-time code generation required.
+
+## Core Concepts
+
+| Concept | Description |
+|---|---|
+| **Module** | Unit of organization. Groups controllers and providers. Can be imported by other modules. |
+| **Controller** | Handles HTTP or WebSocket routes. Embeds `common.REST` or `common.WS`. |
+| **Provider** | Injectable service. Any struct implementing `NewProvider() core.Provider`. |
+| **ExecutionContext** | Request-scoped `context.Context` with metadata. Passed through the entire pipeline. |
+| **Middleware** | Runs before guards, can short-circuit the pipeline. |
+| **Guard** | Decides whether a request is authorized to proceed. |
+| **Interceptor** | Wraps the handler — pre/post processing, response transformation via aggregation. |
+| **ExceptionFilter** | Catches errors and translates them to HTTP responses. |
+
+## Quick Overview
+
+```go
+package main
+
+import "github.com/dangduoc08/ginject/core"
+
+func main() {
+    app := core.New()
+    app.Create(AppModule)
+    app.Logger.Fatal("App", "error", app.Listen(3000))
+}
+```
+
+## Request Pipeline
+
+Every HTTP request flows through this deterministic pipeline:
+
+```
+GlobalMiddlewares → ModuleMiddlewares → Guards → Interceptors → Handler → Aggregation → Response
+                                                                                    ↑
+                                                                          ExceptionFilters (on error)
+```
+
+Each layer is composable and can be bound globally, per-module, or per-route.
+
+## Module Graph
+
+```go
+// AppModule (root)
+//   ├── ConfigModule   (global, .env loader)
+//   ├── CacheModule    (global, LFU in-memory cache)
+//   └── UserModule
+//         ├── UserController  (REST: /users)
+//         └── UserService     (provider)
+```
+
+Providers declared in a module are available only within that module unless exported or the module is marked `IsGlobal: true`.

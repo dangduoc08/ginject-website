@@ -1,0 +1,145 @@
+---
+title: Controllers
+description: Controllers handle incoming requests. Learn how to create REST and WebSocket controllers, set path prefixes, and bind middleware, guards, and interceptors.
+---
+
+# Controllers
+
+A **Controller** is responsible for receiving requests and returning responses. REST controllers embed `common.REST`; WebSocket controllers embed `common.WS`.
+
+## Creating a REST Controller
+
+```go
+type ProductController struct {
+    common.REST
+    ProductService // auto-injected
+}
+
+func (c ProductController) NewController() common.Controller {
+    c.Prefix("products")
+    return c
+}
+```
+
+Every controller must implement the `NewController() common.Controller` method. This is where you set the path prefix and bind pipeline layers.
+
+## Handler Methods
+
+Method names are parsed into HTTP routes automatically. The method must be exported (capitalized).
+
+```go
+// GET /products
+func (c *ProductController) READ(exec *ctx.ExecutionContext) []Product {
+    return c.ProductService.FindAll(exec)
+}
+
+// GET /products/:id
+func (c *ProductController) READ_BY_ID(exec *ctx.ExecutionContext, param ctx.Param) Product {
+    return c.ProductService.FindOne(exec, param.Get("id"))
+}
+
+// POST /products
+func (c *ProductController) CREATE(exec *ctx.ExecutionContext, body ctx.Body) Product {
+    var dto CreateProductDTO
+    body.Bind(&dto)
+    return c.ProductService.Create(exec, dto)
+}
+
+// PUT /products/:id
+func (c *ProductController) UPDATE_BY_ID(exec *ctx.ExecutionContext, param ctx.Param, body ctx.Body) Product {
+    var dto UpdateProductDTO
+    body.Bind(&dto)
+    return c.ProductService.Update(exec, param.Get("id"), dto)
+}
+
+// DELETE /products/:id
+func (c *ProductController) DELETE_BY_ID(exec *ctx.ExecutionContext, param ctx.Param) bool {
+    return c.ProductService.Delete(exec, param.Get("id"))
+}
+```
+
+## Injected Handler Parameters
+
+Declare parameter types in any order. The framework resolves them by type:
+
+| Type | What you get |
+|---|---|
+| `*ctx.ExecutionContext` | Request-scoped context with metadata |
+| `*ctx.Context` | Legacy context (use ExecutionContext instead) |
+| `*http.Request` | Raw HTTP request |
+| `http.ResponseWriter` | Raw response writer |
+| `ctx.Body` | JSON body helper |
+| `ctx.Query` | URL query parameters |
+| `ctx.Param` | Path parameters |
+| `ctx.Header` | Request headers |
+| `ctx.Form` | Multipart/urlencoded form data |
+| `ctx.File` | Uploaded file |
+| `ctx.Next` | Call next handler (middleware pattern) |
+| `ctx.Redirect` | Redirect helper |
+
+## Binding Pipeline Layers
+
+```go
+func (c UserController) NewController() common.Controller {
+    c.Prefix("users")
+
+    // Middleware on specific handlers
+    c.BindMiddleware(RequestLogger, c.READ, c.READ_BY_ID, c.CREATE)
+
+    // Guard on all handlers in this controller
+    c.BindGuard(JWTAuthGuard)
+
+    // Interceptor on specific handler
+    c.BindInterceptor(CacheInterceptor, c.READ, c.READ_BY_ID)
+
+    // Exception filter for this controller
+    c.BindExceptionFilter(UserExceptionFilter)
+
+    return c
+}
+```
+
+`BindMiddleware`, `BindGuard`, `BindInterceptor`, and `BindExceptionFilter` each take the handler func(s) to bind to. Pass no handlers to bind globally across the controller.
+
+## WebSocket Controllers
+
+WebSocket controllers embed `common.WS` instead of `common.REST`. Method names map to WebSocket event names.
+
+```go
+type ChatController struct {
+    common.WS
+    ChatService
+}
+
+func (c ChatController) NewController() common.Controller {
+    c.Prefix("chat")
+    return c
+}
+
+// Handles the "message" event
+func (c *ChatController) MESSAGE(ws *ctx.WSContext, payload ctx.WSPayload) {
+    text := payload.Get("text")
+    c.ChatService.Broadcast(ws, text)
+}
+
+// Handles the "join" event
+func (c *ChatController) JOIN(ws *ctx.WSContext, payload ctx.WSPayload) {
+    room := payload.Get("room")
+    c.ChatService.JoinRoom(ws, room)
+}
+```
+
+## Controller Registration
+
+Always register controllers in the module's `Controllers` list:
+
+```go
+var ProductModule = func() *core.Module {
+    return core.ModuleBuilder().
+        Controllers(ProductController{}).
+        Providers(ProductService{}).
+        Build()
+}
+```
+
+The zero value of the controller struct is passed — the framework populates injected fields through reflection.

@@ -1,0 +1,109 @@
+---
+title: Modules
+description: Module là đơn vị tổ chức chính trong Ginject. Tìm hiểu cách tạo module tĩnh và động, cấu hình global providers và compose module graphs.
+---
+
+# Modules
+
+Một **Module** là một construct kiểu class (struct Go) nhóm các controllers, providers và sub-modules liên quan. Module graph mô tả cách ứng dụng của bạn được kết nối.
+
+## Module Tĩnh
+
+Module tĩnh là một biến `func() *core.Module` — nó là singleton được tạo một lần trong vòng đời ứng dụng.
+
+```go
+var UserModule = func() *core.Module {
+    return core.ModuleBuilder().
+        Controllers(UserController{}).
+        Providers(UserService{}).
+        Build()
+}
+```
+
+Tham chiếu từ module cha:
+
+```go
+var AppModule = func() *core.Module {
+    return core.ModuleBuilder().
+        Imports(UserModule).
+        Build()
+}
+```
+
+## Module Động
+
+Module động được khởi tạo với các đối số cấu hình. Chúng được định nghĩa là struct với phương thức factory `New(...)`.
+
+```go
+type ConfigModuleOptions struct {
+    FilePath string
+}
+
+type configModule struct {
+    opts ConfigModuleOptions
+}
+
+func NewConfigModule(opts ConfigModuleOptions) *configModule {
+    return &configModule{opts: opts}
+}
+
+func (m *configModule) New() *core.Module {
+    return core.ModuleBuilder().
+        Providers(ConfigService{FilePath: m.opts.FilePath}).
+        Build()
+}
+```
+
+Import module động bằng cách gọi factory:
+
+```go
+var AppModule = func() *core.Module {
+    return core.ModuleBuilder().
+        Imports(
+            NewConfigModule(ConfigModuleOptions{FilePath: ".env"}),
+        ).
+        Build()
+}
+```
+
+## Global Modules
+
+Đặt `IsGlobal: true` trên module khiến tất cả providers của nó khả dụng với mọi module khác mà không cần import tường minh.
+
+```go
+var CacheModule = func() *core.Module {
+    m := core.ModuleBuilder().
+        Providers(CacheService{}).
+        Build()
+    m.IsGlobal = true
+    return m
+}
+```
+
+## Module Lifecycle Hook
+
+Module có thể chạy logic khởi tạo khi ứng dụng được wire. Sử dụng `OnInit` cho các tác vụ như thiết lập kết nối database:
+
+```go
+var DatabaseModule = func() *core.Module {
+    db := &DatabaseService{}
+    m := core.ModuleBuilder().
+        Providers(db).
+        Build()
+    m.OnInit = func() {
+        if err := db.Connect(); err != nil {
+            panic(err)
+        }
+    }
+    return m
+}
+```
+
+## ModuleBuilder API
+
+| Phương thức | Mô tả |
+|---|---|
+| `Imports(modules ...any)` | Import các sub-module tĩnh hoặc động |
+| `Controllers(cs ...Controller)` | Đăng ký controllers cho module này |
+| `Providers(ps ...Provider)` | Đăng ký providers cho module này |
+| `Build()` | Trả về `*core.Module` đã được cấu hình |

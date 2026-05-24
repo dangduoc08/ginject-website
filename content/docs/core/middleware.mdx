@@ -1,0 +1,145 @@
+---
+title: Middleware
+description: Middleware intercepts requests before they reach guards and handlers. Learn the MiddlewareFn interface, built-in middlewares, and how to write custom middleware.
+---
+
+# Middleware
+
+Middleware runs before guards and intercepts requests. It can short-circuit the pipeline by writing a response directly, or call `next()` to continue.
+
+## The MiddlewareFn Interface
+
+```go
+type MiddlewareFn func(c *ctx.Context, next ctx.Next)
+```
+
+A middleware receives the request context and a `next` function. Call `next()` to pass control downstream; return without calling `next()` to short-circuit.
+
+## Writing Custom Middleware
+
+```go
+func RequestIDMiddleware(c *ctx.Context, next ctx.Next) {
+    requestID := c.Request.Header.Get("X-Request-ID")
+    if requestID == "" {
+        requestID = generateUUID()
+    }
+    c.Response.Header().Set("X-Request-ID", requestID)
+    next()
+}
+```
+
+## Global Middleware
+
+Apply middleware to every route in the application:
+
+```go
+app.UseMiddleware(
+    middleware.CORS(middleware.CORSOptions{
+        AllowedOrigins: []string{"https://yourdomain.com"},
+        AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+        AllowedHeaders: []string{"Content-Type", "Authorization"},
+    }),
+    middleware.Helmet(),
+    middleware.RequestLogger(),
+    RequestIDMiddleware,
+)
+```
+
+## Controller-Level Middleware
+
+Bind middleware to all handlers in a controller:
+
+```go
+func (c UserController) NewController() common.Controller {
+    c.Prefix("users")
+    c.BindMiddleware(AuthMiddleware)
+    return c
+}
+```
+
+## Handler-Level Middleware
+
+Bind middleware to specific handlers:
+
+```go
+func (c UserController) NewController() common.Controller {
+    c.Prefix("users")
+    c.BindMiddleware(RateLimitMiddleware, c.CREATE, c.UPDATE_BY_ID)
+    return c
+}
+```
+
+## Built-in Middlewares
+
+### CORS
+
+```go
+import "github.com/dangduoc08/ginject/middleware"
+
+app.UseMiddleware(middleware.CORS(middleware.CORSOptions{
+    AllowedOrigins:   []string{"*"},
+    AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+    AllowedHeaders:   []string{"Content-Type", "Authorization"},
+    ExposedHeaders:   []string{"X-Request-ID"},
+    AllowCredentials: true,
+    MaxAge:           86400,
+}))
+```
+
+### Helmet
+
+Sets security-related HTTP response headers:
+
+```go
+app.UseMiddleware(middleware.Helmet())
+```
+
+Sets: `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy`, `Content-Security-Policy`, and others.
+
+### RequestLogger
+
+Logs method, path, status code, latency, and request ID for each request:
+
+```go
+app.UseMiddleware(middleware.RequestLogger())
+```
+
+Output example:
+```
+INFO  GET /users 200 1.234ms
+```
+
+### CSRF
+
+Double-submit cookie pattern for CSRF protection on mutation endpoints:
+
+```go
+app.UseMiddleware(middleware.CSRF(middleware.CSRFOptions{
+    TokenLength:  32,
+    CookieName:   "_csrf",
+    HeaderName:   "X-CSRF-Token",
+    SecureCookie: true,
+    SameSite:     http.SameSiteStrictMode,
+}))
+```
+
+The CSRF middleware:
+1. Issues a signed CSRF token as an HTTP-only cookie on safe requests (`GET`, `HEAD`, `OPTIONS`).
+2. Validates that the `X-CSRF-Token` header matches the cookie on mutation requests (`POST`, `PUT`, `PATCH`, `DELETE`).
+
+## Module-Level Middleware
+
+Apply middleware only to routes within a specific module:
+
+```go
+var AdminModule = func() *core.Module {
+    m := core.ModuleBuilder().
+        Controllers(AdminController{}).
+        Providers(AdminService{}).
+        Build()
+    m.RESTMiddlewares = append(m.RESTMiddlewares, common.RESTLayer{
+        Fn: RequireAdminRoleMiddleware,
+    })
+    return m
+}
+```

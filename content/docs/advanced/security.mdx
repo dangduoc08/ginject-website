@@ -1,0 +1,204 @@
+---
+title: Security
+description: Ginject provides built-in security primitives including CSRF protection, Helmet headers, ThrottlerGuard, and CORS. Learn how to configure each for production.
+---
+
+# Security
+
+Ginject includes production-ready security primitives out of the box. Enable them in the correct order for defense-in-depth.
+
+## Recommended Global Configuration
+
+```go
+app.UseMiddleware(
+    middleware.CORS(middleware.CORSOptions{
+        AllowedOrigins:   []string{"https://yourdomain.com"},
+        AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+        AllowedHeaders:   []string{"Content-Type", "Authorization", "X-CSRF-Token"},
+        ExposedHeaders:   []string{"X-RateLimit-Limit", "X-RateLimit-Remaining"},
+        AllowCredentials: true,
+        MaxAge:           86400,
+    }),
+    middleware.Helmet(),
+    middleware.CSRF(middleware.CSRFOptions{
+        TokenLength:  32,
+        CookieName:   "_csrf",
+        HeaderName:   "X-CSRF-Token",
+        SecureCookie: true,
+        SameSite:     http.SameSiteStrictMode,
+    }),
+    middleware.RequestLogger(),
+)
+
+app.UseGuard(guards.NewThrottler(guards.ThrottlerOptions{
+    Limit:    200,
+    TTL:      time.Minute,
+    Strategy: guards.SlidingWindow,
+}))
+```
+
+## CORS
+
+Cross-Origin Resource Sharing controls which origins can make requests to your API.
+
+```go
+middleware.CORS(middleware.CORSOptions{
+    AllowedOrigins:   []string{"https://app.yourdomain.com"},
+    AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+    AllowedHeaders:   []string{"Content-Type", "Authorization"},
+    AllowCredentials: true,
+    MaxAge:           3600, // preflight cache seconds
+})
+```
+
+For public APIs that don't use cookies:
+
+```go
+middleware.CORS(middleware.CORSOptions{
+    AllowedOrigins: []string{"*"},
+    AllowedMethods: []string{"GET", "POST"},
+})
+```
+
+**Do not** combine `AllowedOrigins: ["*"]` with `AllowCredentials: true` — browsers will reject this.
+
+## Helmet
+
+Sets a suite of security HTTP response headers:
+
+```go
+app.UseMiddleware(middleware.Helmet())
+```
+
+Headers set by Helmet:
+
+| Header | Value |
+|---|---|
+| `X-Content-Type-Options` | `nosniff` |
+| `X-Frame-Options` | `DENY` |
+| `X-XSS-Protection` | `1; mode=block` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+| `Content-Security-Policy` | `default-src 'self'` |
+| `Permissions-Policy` | Disables microphone, camera, geolocation |
+
+## CSRF
+
+The CSRF middleware uses the **double-submit cookie** pattern:
+
+1. On `GET`/`HEAD`/`OPTIONS`, the middleware generates a signed CSRF token and sets it as a cookie.
+2. On `POST`/`PUT`/`PATCH`/`DELETE`, the middleware validates that the `X-CSRF-Token` request header matches the cookie value.
+
+```go
+middleware.CSRF(middleware.CSRFOptions{
+    TokenLength:  32,
+    CookieName:   "_csrf",
+    HeaderName:   "X-CSRF-Token",
+    SecureCookie: true,          // Set Secure flag (HTTPS only)
+    SameSite:     http.SameSiteStrictMode,
+})
+```
+
+Client usage (JavaScript):
+
+```js
+// Read the CSRF token from the cookie
+const csrfToken = document.cookie
+    .split('; ')
+    .find(row => row.startsWith('_csrf='))
+    ?.split('=')[1];
+
+// Include in all mutation requests
+fetch('/api/users', {
+    method: 'POST',
+    headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': csrfToken,
+    },
+    body: JSON.stringify({ name: 'Alice' }),
+});
+```
+
+## Rate Limiting (ThrottlerGuard)
+
+See the [Guards](/docs/core/guards) documentation for full ThrottlerGuard configuration.
+
+### Per-User Rate Limiting
+
+```go
+guards.NewThrottler(guards.ThrottlerOptions{
+    Limit:    1000,
+    TTL:      time.Hour,
+    Strategy: guards.TokenBucket,
+    KeyFunc: func(c *ctx.Context) string {
+        // Key by authenticated user ID
+        if userID, ok := c.Exec.Get(ctx.MetaUser); ok {
+            return fmt.Sprintf("user:%v", userID)
+        }
+        // Fallback to IP
+        return c.Request.RemoteAddr
+    },
+})
+```
+
+### Per-API-Key Rate Limiting
+
+```go
+guards.NewThrottler(guards.ThrottlerOptions{
+    Limit:   10000,
+    TTL:     time.Hour,
+    Strategy: guards.SlidingWindow,
+    KeyFunc: func(c *ctx.Context) string {
+        return "apikey:" + c.Request.Header.Get("X-API-Key")
+    },
+})
+```
+
+## Authentication Patterns
+
+Ginject doesn't bundle a JWT library, but guards are the right place to implement authentication:
+
+```go
+type JWTGuard struct {
+    ConfigService *config.ConfigService
+}
+
+func (g JWTGuard) CanActivate(c *ctx.Context) bool {
+    authHeader := c.Request.Header.Get("Authorization")
+    if !strings.HasPrefix(authHeader, "Bearer ") {
+        panic(exception.UnauthorizedException("missing bearer token"))
+    }
+
+    token := strings.TrimPrefix(authHeader, "Bearer ")
+    secret, _ := g.ConfigService.Get("JWT_SECRET")
+
+    claims, err := validateJWT(token, secret)
+    if err != nil {
+        panic(exception.UnauthorizedException("invalid token"))
+    }
+
+    c.Exec.Set(ctx.MetaUser, claims)
+    return true
+}
+```
+
+## Input Validation
+
+Validate request bodies in handlers using the `body.Bind` pattern with a validation library:
+
+```go
+type CreateUserDTO struct {
+    Name  string `json:"name"  validate:"required,min=2,max=100"`
+    Email string `json:"email" validate:"required,email"`
+}
+
+func (c *UserController) CREATE(exec *ctx.ExecutionContext, body ctx.Body) User {
+    var dto CreateUserDTO
+    body.Bind(&dto)
+
+    if err := validate.Struct(dto); err != nil {
+        panic(exception.BadRequestException(err.Error()))
+    }
+
+    return c.UserService.Create(exec, dto)
+}
+```

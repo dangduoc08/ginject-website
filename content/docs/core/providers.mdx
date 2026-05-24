@@ -1,0 +1,113 @@
+---
+title: Providers
+description: Providers are injectable services in Ginject. Any struct implementing NewProvider() can be injected into controllers and other providers automatically.
+---
+
+# Providers
+
+A **Provider** is any Go struct that implements the `NewProvider() core.Provider` interface. Providers encapsulate business logic, database access, external API calls, or any shared functionality.
+
+## Creating a Provider
+
+```go
+type EmailService struct {
+    ConfigService *config.ConfigService // auto-injected
+}
+
+func (s EmailService) NewProvider() core.Provider {
+    return s
+}
+
+func (s *EmailService) SendWelcome(exec *ctx.ExecutionContext, to string) error {
+    smtpHost, _ := s.ConfigService.Get("SMTP_HOST")
+    // ... send email
+    return nil
+}
+```
+
+The `NewProvider()` method must return `core.Provider` and returns `s` (the receiver value). This is required for the DI container to recognize the struct.
+
+## Injection Mechanics
+
+Ginject uses reflection to wire providers. If a controller or another provider has a field whose type matches a registered provider, it is injected automatically.
+
+```go
+type UserController struct {
+    common.REST
+    UserService   // injected by type match
+    EmailService  // injected by type match
+}
+```
+
+No field tags are needed. The match is done on the concrete type, not the field name.
+
+## Provider-to-Provider Injection
+
+Providers can depend on other providers:
+
+```go
+type OrderService struct {
+    UserService    // injected
+    ProductService // injected
+    EmailService   // injected
+}
+
+func (s OrderService) NewProvider() core.Provider {
+    return s
+}
+
+func (s *OrderService) PlaceOrder(exec *ctx.ExecutionContext, dto PlaceOrderDTO) Order {
+    user := s.UserService.FindOne(exec, dto.UserID)
+    product := s.ProductService.FindOne(exec, dto.ProductID)
+    order := Order{User: user, Product: product}
+    _ = s.EmailService.SendConfirmation(exec, user.Email, order)
+    return order
+}
+```
+
+## Interface-Based Providers
+
+You can register a provider against an interface. This is useful for testing or when you have multiple implementations:
+
+```go
+type Logger interface {
+    Info(msg string, args ...any)
+    Error(msg string, args ...any)
+}
+
+type ZapLogger struct{}
+
+func (l ZapLogger) NewProvider() core.Provider { return l }
+func (l *ZapLogger) Info(msg string, args ...any)  { /* ... */ }
+func (l *ZapLogger) Error(msg string, args ...any) { /* ... */ }
+```
+
+## Scoping
+
+Providers are singleton-scoped within the module that declares them. If two modules each declare their own `UserService`, they get separate instances. Use a global module to share a single instance.
+
+```go
+// Make UserService a global singleton
+var SharedModule = func() *core.Module {
+    m := core.ModuleBuilder().
+        Providers(UserService{}).
+        Build()
+    m.IsGlobal = true
+    return m
+}
+```
+
+## Accessing the Built-in Logger
+
+The framework's structured logger is available as an injectable interface. Declare it on your provider:
+
+```go
+type UserService struct {
+    common.Logger // auto-injected built-in logger
+}
+
+func (s *UserService) FindOne(exec *ctx.ExecutionContext, id string) *User {
+    s.Logger.Info("UserService", "method", "FindOne", "id", id)
+    // ...
+}
+```

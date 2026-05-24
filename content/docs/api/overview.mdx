@@ -1,0 +1,313 @@
+---
+title: API Overview
+description: Complete reference for all Ginject public types, interfaces, and functions organized by package.
+---
+
+# API Reference
+
+## Package `core`
+
+### App
+
+```go
+type App struct {
+    Logger common.Logger
+    // unexported fields
+}
+
+func New() *App
+func (a *App) Create(module func() *Module) *App
+func (a *App) Listen(port int) error
+func (a *App) SetGlobalPrefix(prefix string)
+func (a *App) EnableVersioning(v versioning.VersioningType)
+func (a *App) UseMiddleware(fns ...common.MiddlewareFn)
+func (a *App) UseGuard(guarders ...common.Guarder)
+func (a *App) UseInterceptor(interceptors ...common.Interceptable)
+func (a *App) UseExceptionFilter(filters ...common.ExceptionFilterable)
+```
+
+### Module
+
+```go
+type Module struct {
+    IsGlobal             bool
+    OnInit               func()
+    RESTExceptionFilters []common.RESTLayer
+    RESTMiddlewares      []common.RESTLayer
+    RESTGuards           []common.RESTLayer
+    RESTInterceptors     []common.RESTLayer
+}
+```
+
+### ModuleBuilder
+
+```go
+func ModuleBuilder() *moduleBuilder
+
+func (m *moduleBuilder) Imports(modules ...any) *moduleBuilder
+func (m *moduleBuilder) Controllers(cs ...Controller) *moduleBuilder
+func (m *moduleBuilder) Providers(ps ...Provider) *moduleBuilder
+func (m *moduleBuilder) Build() *Module
+```
+
+### Provider Interface
+
+```go
+type Provider interface {
+    NewProvider() Provider
+}
+```
+
+### Controller Interface
+
+```go
+type Controller interface {
+    NewController() Controller
+}
+```
+
+---
+
+## Package `ctx`
+
+### ExecutionContext
+
+```go
+type ExecutionContext struct {
+    context.Context
+}
+
+func NewHTTPExecutionContext(parent context.Context, timeout time.Duration) (*ExecutionContext, context.CancelFunc)
+func NewWSExecutionContext() (*ExecutionContext, context.CancelFunc)
+func WithTimeout(parent *ExecutionContext, d time.Duration) (*ExecutionContext, context.CancelFunc)
+
+func (e *ExecutionContext) Protocol() Protocol
+func (e *ExecutionContext) Set(key metaKey, val any) *ExecutionContext
+func (e *ExecutionContext) Get(key metaKey) (any, bool)
+func (e *ExecutionContext) MustGet(key metaKey) any
+```
+
+### Well-Known Metadata Keys
+
+```go
+const (
+    MetaRequestID metaKey = "requestID"
+    MetaTraceID   metaKey = "traceID"
+    MetaUser      metaKey = "user"
+)
+```
+
+### Protocol
+
+```go
+type Protocol string
+
+const (
+    ProtoHTTP Protocol = "http"
+    ProtoWS   Protocol = "ws"
+    ProtoRPC  Protocol = "rpc"
+    ProtoGQL  Protocol = "gql"
+)
+```
+
+### WSContext
+
+```go
+type WSContext struct {
+    Conn    *websocket.Conn
+    ConnID  string
+    Message WSMessage
+}
+
+func NewWSContext(conn *websocket.Conn) (*WSContext, context.CancelFunc)
+func (ws *WSContext) Exec() *ExecutionContext
+func (ws *WSContext) Cancel()
+func (ws *WSContext) NewMessageContext(d time.Duration) (*ExecutionContext, context.CancelFunc)
+```
+
+### WSMessage
+
+```go
+type WSMessage struct {
+    Event   string    `json:"event"`
+    Payload WSPayload `json:"payload"`
+}
+```
+
+### GoSafe
+
+```go
+type ErrHandler func(err error, stack []byte)
+
+func GoSafe(ctx context.Context, fn func(context.Context), errFn ErrHandler)
+```
+
+### Request Parameter Types
+
+| Type | Description |
+|---|---|
+| `ctx.Body` | JSON request body — use `.Bind(&dto)` |
+| `ctx.Query` | URL query parameters — use `.Get("key")` |
+| `ctx.Param` | Path parameters — use `.Get("id")` |
+| `ctx.Header` | Request headers — use `.Get("X-Key")` |
+| `ctx.Form` | Multipart / urlencoded form — use `.Get("field")` |
+| `ctx.File` | Uploaded file — use `.Get("field")` |
+| `ctx.WSPayload` | WebSocket event payload — use `.Get("field")` |
+| `ctx.Next` | Call next middleware — `func()` |
+| `ctx.Redirect` | Redirect helper — `func(url string)` |
+
+---
+
+## Package `common`
+
+### MiddlewareFn
+
+```go
+type MiddlewareFn func(c *ctx.Context, next ctx.Next)
+```
+
+### Guarder
+
+```go
+type Guarder interface {
+    CanActivate(c *ctx.Context) bool
+}
+```
+
+### Interceptable
+
+```go
+type Interceptable interface {
+    Intercept(c *ctx.Context, agg *aggregation.Aggregation) any
+}
+```
+
+### ExceptionFilterable
+
+```go
+type ExceptionFilterable interface {
+    Catch(e *exception.Exception, c *ctx.Context)
+}
+```
+
+### REST (controller embed)
+
+```go
+type REST struct {
+    Middleware
+    Guard
+    Interceptor
+    ExceptionFilter
+}
+
+func (r *REST) Prefix(prefix string)
+func (r *REST) BindMiddleware(fn MiddlewareFn, handlers ...any)
+func (r *REST) BindGuard(guarder Guarder, handlers ...any)
+func (r *REST) BindInterceptor(interceptor Interceptable, handlers ...any)
+func (r *REST) BindExceptionFilter(filter ExceptionFilterable, handlers ...any)
+```
+
+---
+
+## Package `aggregation`
+
+```go
+type AggregationOperator = func(*ctx.Context, any) any
+
+func (a *Aggregation) Pipe(operators ...AggregationOperator) any
+
+func Transform(fn func(*ctx.Context, any) any) AggregationOperator
+func Tap(fn func(*ctx.Context, any)) AggregationOperator
+func Timeout(d time.Duration) AggregationOperator
+func Error(fn func(*ctx.Context, error) any) AggregationOperator
+```
+
+---
+
+## Package `exception`
+
+```go
+type Exception struct {
+    Status  int
+    Message string
+}
+
+func BadRequestException(msg string) *Exception            // 400
+func UnauthorizedException(msg string) *Exception          // 401
+func ForbiddenException(msg string) *Exception             // 403
+func NotFoundException(msg string) *Exception              // 404
+func ConflictException(msg string) *Exception              // 409
+func UnprocessableEntityException(msg string) *Exception   // 422
+func TooManyRequestsException(msg string) *Exception       // 429
+func InternalServerErrorException(msg string) *Exception   // 500
+```
+
+---
+
+## Package `guards`
+
+```go
+type Strategy int
+
+const (
+    FixedWindow   Strategy = iota
+    SlidingWindow Strategy = iota
+    TokenBucket   Strategy = iota
+)
+
+type ThrottlerOptions struct {
+    Limit    int64
+    TTL      time.Duration
+    Strategy Strategy
+    KeyFunc  func(*ctx.Context) string
+    Store    cache.Cache
+}
+
+func NewThrottler(opts ThrottlerOptions) ThrottlerGuard
+```
+
+---
+
+## Package `modules/cache`
+
+```go
+type Cache interface {
+    Get(ctx context.Context, key string) ([]byte, bool)
+    Set(ctx context.Context, key string, val []byte, ttl time.Duration) error
+    SetNX(ctx context.Context, key string, val []byte, ttl time.Duration) (bool, error)
+    Delete(ctx context.Context, key string) error
+    Keys(ctx context.Context) []string
+    TTL(ctx context.Context, key string) (time.Duration, bool)
+}
+
+type CacheService struct {
+    Backend Cache
+}
+
+func NewMemoryCache() Cache
+```
+
+---
+
+## Package `middleware`
+
+```go
+func CORS(opts CORSOptions) common.MiddlewareFn
+func Helmet() common.MiddlewareFn
+func RequestLogger() common.MiddlewareFn
+func CSRF(opts CSRFOptions) common.MiddlewareFn
+```
+
+---
+
+## Package `versioning`
+
+```go
+type VersioningType int
+
+const (
+    URL    VersioningType = iota
+    Header VersioningType = iota
+    Query  VersioningType = iota
+)
+```

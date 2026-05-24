@@ -1,0 +1,170 @@
+---
+title: Async Runtime
+description: Learn GoSafe goroutine launching, WithTimeout SLA enforcement, context propagation rules, and the guarantees Ginject provides for goroutine lifecycle safety.
+---
+
+# Async Runtime
+
+Ginject enforces a strict set of rules for async work to guarantee zero goroutine leaks and deterministic request cancellation.
+
+## The Problem with Raw `go fn()`
+
+```go
+// WRONG — goroutine leak risk
+func (c *UserController) CREATE(exec *ctx.ExecutionContext, body ctx.Body) User {
+    user := c.UserService.Create(exec, body)
+    go sendWelcomeEmail(user.Email) // no context — runs forever even if client disconnects
+    return user
+}
+```
+
+If the client disconnects, the HTTP request context is cancelled, but the goroutine has no way to know. It continues running, consuming memory and CPU.
+
+## GoSafe — The Correct Pattern
+
+```go
+func (c *UserController) CREATE(exec *ctx.ExecutionContext, body ctx.Body) User {
+    var dto CreateUserDTO
+    body.Bind(&dto)
+    user := c.UserService.Create(exec, dto)
+
+    ctx.GoSafe(exec, func(c context.Context) {
+        select {
+        case <-c.Done():
+            return // client disconnected or request timed out — stop
+        default:
+            sendWelcomeEmail(c, user.Email)
+        }
+    }, func(err error, stack []byte) {
+        log.Printf("email goroutine failed: %v\n%s", err, stack)
+    })
+
+    return user
+}
+```
+
+### GoSafe Signature
+
+```go
+func GoSafe(ctx context.Context, fn func(context.Context), errFn ErrHandler)
+```
+
+| Parameter | Description |
+|---|---|
+| `ctx` | Parent context. GoSafe checks `ctx.Err()` before spawning. |
+| `fn` | Function to run in the goroutine. Receives `ctx` as a `context.Context`. |
+| `errFn` | Called if `fn` panics. Receives the error and stack trace. If `nil`, panics are silently discarded. |
+
+### When GoSafe Skips Spawning
+
+```go
+if ctx.Err() != nil {
+    return // already cancelled — skip goroutine
+}
+```
+
+This prevents goroutine spawning on already-cancelled contexts, which is the most common cause of goroutine leaks during request teardown.
+
+## WithTimeout — SLA Enforcement
+
+Requests have a global SLA (default 30s). Individual downstream calls should have tighter SLAs:
+
+```go
+func (s *UserService) FindWithRelated(exec *ctx.ExecutionContext, id string) UserWithRelated {
+    // DB call: max 10s
+    dbCtx, dbCancel := ctx.WithTimeout(exec, 10*time.Second)
+    defer dbCancel()
+    user := s.DB.FindUser(dbCtx, id)
+
+    // External API call: max 3s
+    apiCtx, apiCancel := ctx.WithTimeout(exec, 3*time.Second)
+    defer apiCancel()
+    profile := s.ProfileAPI.Fetch(apiCtx, user.ProfileID)
+
+    return UserWithRelated{User: user, Profile: profile}
+}
+```
+
+`WithTimeout` creates a child context that is cancelled when **either** the parent is cancelled OR the duration elapses, whichever comes first.
+
+### Metadata Inheritance
+
+`WithTimeout` snapshot-copies the parent's metadata to the child:
+
+```go
+exec.Set(ctx.MetaUser, userClaims)
+
+child, cancel := ctx.WithTimeout(exec, 5*time.Second)
+defer cancel()
+
+// child still has MetaUser
+claims := child.MustGet(ctx.MetaUser)
+```
+
+Mutations to `child` do not affect `exec`, and vice versa (they use separate maps).
+
+## Framework Defaults
+
+| Setting | Default | Description |
+|---|---|---|
+| `requestTimeout` | 30s | Hard deadline on every HTTP request execution context. |
+| `wsMessageTimeout` | 5s | Hard deadline on each WebSocket message dispatch. |
+
+Override via app configuration:
+
+```go
+app := core.New()
+app.SetRequestTimeout(60 * time.Second)
+app.SetWSMessageTimeout(10 * time.Second)
+```
+
+## Context Propagation Rules
+
+1. **Pass explicitly** — never rely on goroutine-local storage or package-level variables to share a context.
+2. **First parameter** — `*ctx.ExecutionContext` should always be the first parameter of service and repository functions.
+3. **Never store** — never store `*ExecutionContext` in a struct field. It is request-scoped and will be cancelled.
+4. **Always defer cancel** — every `WithTimeout` call must be followed immediately by `defer cancel()`.
+5. **Use GoSafe** — every goroutine spawned during a request must use `ctx.GoSafe`.
+
+## Long-Running Background Work
+
+For work that outlives the request (e.g., queue processing), use `context.Background()` directly — don't inherit from the request context:
+
+```go
+func (s *OrderService) SubmitToQueue(exec *ctx.ExecutionContext, order Order) {
+    // Log the submission with request context
+    s.Logger.Info("OrderService", "action", "submit", "orderID", order.ID,
+        "requestID", exec.MustGet(ctx.MetaRequestID))
+
+    // Queue processing must NOT inherit exec — it outlives the request
+    go func() {
+        bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+        defer cancel()
+        s.Queue.Enqueue(bgCtx, order)
+    }()
+}
+```
+
+This is the one case where `go fn()` without `GoSafe` is acceptable — the goroutine is intentionally long-lived and unrelated to the request.
+
+## Cancellation Propagation Diagram
+
+```
+HTTP request arrives
+  │
+  ▼
+r.Context() ──────────────── cancelled on client disconnect
+  │
+  ▼
+exec (30s timeout) ───────── cancelled at 30s or on client disconnect
+  │
+  ├── child1 (10s) ─────────  cancelled at 10s or when exec cancels
+  │       │
+  │       └── GoSafe goroutine ─ cancelled when child1 cancels
+  │
+  └── child2 (3s) ──────────  cancelled at 3s or when exec cancels
+          │
+          └── GoSafe goroutine ─ cancelled when child2 cancels
+```
+
+Every goroutine in the tree is guaranteed to stop when the request ends.

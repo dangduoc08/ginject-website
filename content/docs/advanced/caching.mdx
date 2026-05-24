@@ -1,0 +1,197 @@
+---
+title: Caching
+description: Ginject's built-in CacheModule provides a sharded LFU in-memory cache with TTL, atomic SetNX, and a pluggable backend interface.
+---
+
+# Caching
+
+Ginject ships a production-ready in-memory cache module backed by a sharded LFU (Least Frequently Used) eviction strategy.
+
+## Setup
+
+Import `CacheModule` as a global module so `CacheService` is available everywhere:
+
+```go
+// app.module.go
+var AppModule = func() *core.Module {
+    return core.ModuleBuilder().
+        Imports(
+            CacheModule, // or modules/cache package import path
+        ).
+        Build()
+}
+
+// cache.module.go
+var CacheModule = func() *core.Module {
+    m := core.ModuleBuilder().
+        Providers(cache.CacheService{Backend: cache.NewMemoryCache()}).
+        Build()
+    m.IsGlobal = true
+    return m
+}
+```
+
+## CacheService API
+
+Inject `*cache.CacheService` into any provider or controller:
+
+```go
+type UserService struct {
+    *cache.CacheService // auto-injected
+}
+```
+
+### Get
+
+```go
+raw, ok := cs.CacheService.Get(exec, "users:1")
+if ok {
+    var user User
+    json.Unmarshal(raw, &user)
+    return user
+}
+```
+
+Returns `([]byte, bool)`. The bool is `false` on a cache miss or if the key has expired.
+
+### Set
+
+```go
+raw, _ := json.Marshal(user)
+err := cs.CacheService.Set(exec, "users:1", raw, 5*time.Minute)
+```
+
+Pass `0` as TTL for no expiration. Returns an error if the key is empty.
+
+### SetNX (atomic conditional set)
+
+Set only if the key does not exist. Returns `(bool, error)`:
+
+```go
+// Acquire a distributed lock pattern
+acquired, err := cs.CacheService.SetNX(exec, "lock:order:"+orderID, []byte("1"), 30*time.Second)
+if !acquired {
+    return errors.New("order is being processed by another request")
+}
+defer cs.CacheService.Delete(exec, "lock:order:"+orderID)
+```
+
+`SetNX` is atomic: if two goroutines call it simultaneously with the same key, exactly one will receive `true`.
+
+### Delete
+
+```go
+err := cs.CacheService.Delete(exec, "users:1")
+```
+
+### Keys
+
+List all keys currently in the cache:
+
+```go
+keys := cs.CacheService.Keys(exec)
+for _, k := range keys {
+    fmt.Println(k)
+}
+```
+
+Useful for cache inspection and debugging. Not intended for hot paths.
+
+### TTL
+
+Check the remaining TTL for a key:
+
+```go
+remaining, ok := cs.CacheService.TTL(exec, "users:1")
+if !ok {
+    // Key doesn't exist or has no TTL
+}
+fmt.Printf("Expires in %s\n", remaining)
+```
+
+## Cache Interface
+
+The `Backend` field accepts anything implementing `cache.Cache`. Plug in Redis, Memcached, or a test double:
+
+```go
+type Cache interface {
+    Get(ctx context.Context, key string) ([]byte, bool)
+    Set(ctx context.Context, key string, val []byte, ttl time.Duration) error
+    SetNX(ctx context.Context, key string, val []byte, ttl time.Duration) (bool, error)
+    Delete(ctx context.Context, key string) error
+    Keys(ctx context.Context) []string
+    TTL(ctx context.Context, key string) (time.Duration, bool)
+}
+```
+
+## Memory Cache Internals
+
+The default `MemoryCache` uses:
+
+- **Sharding** — the key space is partitioned across N shards (based on a hash of the key) to reduce lock contention under high concurrency.
+- **LFU eviction** — when a shard is full, the least frequently accessed entry is evicted.
+- **Per-entry TTL** — entries are lazily expired on access.
+
+## Cache Pattern: Read-Through
+
+```go
+func (s *ProductService) FindOne(exec *ctx.ExecutionContext, id string) Product {
+    cacheKey := "products:" + id
+
+    // Try cache
+    if raw, ok := s.CacheService.Get(exec, cacheKey); ok {
+        var p Product
+        json.Unmarshal(raw, &p)
+        return p
+    }
+
+    // Cache miss — query DB
+    child, cancel := ctx.WithTimeout(exec, 10*time.Second)
+    defer cancel()
+
+    p := s.DB.FindProduct(child, id)
+
+    // Populate cache
+    if raw, err := json.Marshal(p); err == nil {
+        _ = s.CacheService.Set(exec, cacheKey, raw, 10*time.Minute)
+    }
+
+    return p
+}
+```
+
+## Cache Pattern: Idempotency Key
+
+```go
+func (s *PaymentService) Charge(exec *ctx.ExecutionContext, dto ChargeDTO) Payment {
+    idempotencyKey := "idempotency:" + dto.IdempotencyKey
+
+    if raw, ok := s.CacheService.Get(exec, idempotencyKey); ok {
+        var existing Payment
+        json.Unmarshal(raw, &existing)
+        return existing // Return cached result for duplicate request
+    }
+
+    // Process the charge
+    payment := s.processCharge(exec, dto)
+
+    // Store result for 24h
+    raw, _ := json.Marshal(payment)
+    _ = s.CacheService.Set(exec, idempotencyKey, raw, 24*time.Hour)
+
+    return payment
+}
+```
+
+## Using Cache in ThrottlerGuard
+
+Provide the cache service as the throttler's store:
+
+```go
+var throttler = guards.NewThrottler(guards.ThrottlerOptions{
+    Limit:    100,
+    TTL:      time.Minute,
+    Strategy: guards.SlidingWindow,
+    Store:    cache.NewMemoryCache(), // or your injected CacheService.Backend
+})
+```

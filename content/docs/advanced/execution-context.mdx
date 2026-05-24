@@ -1,0 +1,204 @@
+---
+title: Execution Context
+description: ExecutionContext is the request-scoped context.Context that flows through every layer of the pipeline. Learn its API, context tree rules, WithTimeout, and metadata management.
+---
+
+# Execution Context
+
+`ExecutionContext` is the runtime control plane for a single HTTP request or WebSocket connection. It embeds `context.Context`, carries typed metadata, and supports hierarchical SLA timeouts.
+
+## The Type
+
+```go
+type ExecutionContext struct {
+    context.Context
+    // unexported fields: mu, meta, protocol
+}
+```
+
+Because `ExecutionContext` embeds `context.Context`, it works transparently with any standard library or third-party code that accepts `context.Context`.
+
+## Construction
+
+### HTTP Request Context
+
+```go
+// Created by the framework; not called by application code normally.
+exec, cancel := ctx.NewHTTPExecutionContext(r.Context(), 30*time.Second)
+defer cancel()
+```
+
+The parent is `r.Context()` — the HTTP request's context. If the client disconnects, the cancellation propagates to `exec` and all derived contexts.
+
+### WebSocket Context
+
+```go
+// Created by the framework for each WS connection.
+exec, cancel := ctx.NewWSExecutionContext()
+defer cancel() // called on connection close
+```
+
+The parent is `context.Background()` — **not** the HTTP upgrade request's context. The upgrade context is cancelled when the handshake completes; basing a long-lived WS context on it would immediately cancel all WS work.
+
+## Context Tree
+
+```
+context.Background()
+  │
+  ├── HTTP path
+  │     r.Context()                  (cancelled on client disconnect)
+  │       └── exec  (30s request SLA)
+  │                 └── child = WithTimeout(exec, 10s)
+  │                               └── GoSafe goroutine inherits child
+  │
+  └── WebSocket path
+        context.Background()
+          └── ws.exec  (connection lifetime)
+                └── msgExec = ws.NewMessageContext(5s)
+                               └── GoSafe goroutine inherits msgExec
+```
+
+### Rules
+
+1. **Always pass `*ctx.ExecutionContext` explicitly** as the first parameter to handlers, middleware, guards, and services.
+2. **Never store `*ExecutionContext` in long-lived structs** (modules, globals, or WS state). It is request-scoped and will be cancelled.
+3. **Always `defer cancel()`** for every context derived with `WithTimeout`.
+
+## WithTimeout
+
+Derive a child context with an SLA deadline layered on top of the parent's deadline:
+
+```go
+func (s *UserService) FindOne(exec *ctx.ExecutionContext, id string) User {
+    // Downstream DB call capped at 10s, regardless of the 30s request SLA
+    child, cancel := ctx.WithTimeout(exec, 10*time.Second)
+    defer cancel()
+
+    return s.DB.QueryUser(child, id)
+}
+```
+
+`WithTimeout` snapshot-copies the parent's metadata to the child, so `child.Get(MetaUser)` still works after the child is created.
+
+## Metadata
+
+### Setting Values
+
+```go
+exec.Set(ctx.MetaRequestID, "req-abc123")
+exec.Set(ctx.MetaUser, userClaims)
+```
+
+### Reading Values
+
+```go
+requestID, ok := exec.Get(ctx.MetaRequestID)
+userClaims, ok := exec.Get(ctx.MetaUser)
+```
+
+### MustGet
+
+For values that must be present (set by a prior middleware/guard), `MustGet` panics with a clear message if absent:
+
+```go
+// In a handler that requires the JWT guard to have run:
+user := exec.MustGet(ctx.MetaUser).(UserClaims)
+```
+
+### Well-Known Keys
+
+```go
+const (
+    MetaRequestID metaKey = "requestID"
+    MetaTraceID   metaKey = "traceID"
+    MetaUser      metaKey = "user"
+)
+```
+
+Define your own typed keys to avoid string collisions:
+
+```go
+type myKey string
+const MetaTenantID myKey = "tenantID"
+
+exec.Set(MetaTenantID, "tenant-123")
+```
+
+## Protocol
+
+Check what transport owns this context:
+
+```go
+switch exec.Protocol() {
+case ctx.ProtoHTTP:
+    // HTTP request
+case ctx.ProtoWS:
+    // WebSocket connection
+}
+```
+
+## GoSafe — Zero Goroutine Leaks
+
+Never use `go fn()` inside a request handler. Use `ctx.GoSafe` instead:
+
+```go
+ctx.GoSafe(exec, func(c context.Context) {
+    // This goroutine is cancelled when exec is done
+    select {
+    case <-c.Done():
+        return
+    default:
+        sendAsyncNotification(c, userID)
+    }
+}, func(err error, stack []byte) {
+    log.Printf("GoSafe panic: %v\n%s", err, stack)
+})
+```
+
+### How GoSafe Works
+
+```go
+func GoSafe(ctx context.Context, fn func(context.Context), errFn ErrHandler) {
+    if ctx.Err() != nil {
+        return // ctx already cancelled — don't spawn
+    }
+    go func() {
+        defer func() {
+            if r := recover(); r != nil && errFn != nil {
+                errFn(fmt.Errorf("GoSafe panic: %v", r), debug.Stack())
+            }
+        }()
+        fn(ctx)
+    }()
+}
+```
+
+**Key properties:**
+- Returns without spawning if `ctx` is already cancelled.
+- Passes `ctx` to `fn` so the goroutine can `select` on `ctx.Done()`.
+- Recovers panics and routes them to `errFn`.
+
+## In Middleware and Guards
+
+```go
+func AuthMiddleware(c *ctx.Context, next ctx.Next) {
+    token := c.Request.Header.Get("Authorization")
+    claims, err := validateJWT(token)
+    if err != nil {
+        panic(exception.UnauthorizedException(err.Error()))
+    }
+    // Set user on the execution context for downstream handlers
+    c.Exec.Set(ctx.MetaUser, claims)
+    next()
+}
+```
+
+Access the execution context from `ctx.Context` via `c.Exec`:
+
+```go
+type Guard struct{}
+func (g Guard) CanActivate(c *ctx.Context) bool {
+    _, ok := c.Exec.Get(ctx.MetaUser)
+    return ok
+}
+```

@@ -1,0 +1,206 @@
+---
+title: WebSocket
+description: Ginject has first-class WebSocket support. Learn WS controllers, WSContext, per-message contexts, subscribed events, and goroutine safety.
+---
+
+# WebSocket
+
+Ginject provides native WebSocket support through controllers that embed `common.WS`. The framework manages connection lifecycles, per-message SLA timeouts, and goroutine safety.
+
+## WS Controller Basics
+
+Replace `common.REST` with `common.WS` and write handler methods whose names map to WebSocket event names:
+
+```go
+type ChatController struct {
+    common.WS
+    ChatService
+}
+
+func (c ChatController) NewController() common.Controller {
+    c.Prefix("chat")
+    return c
+}
+
+// Handles event "message"
+func (c *ChatController) MESSAGE(ws *ctx.WSContext, payload ctx.WSPayload) {
+    text := payload.Get("text")
+    c.ChatService.Broadcast(ws, text)
+}
+
+// Handles event "join"
+func (c *ChatController) JOIN(ws *ctx.WSContext, payload ctx.WSPayload) {
+    room := payload.Get("room")
+    c.ChatService.JoinRoom(ws, room)
+}
+
+// Handles event "leave"
+func (c *ChatController) LEAVE(ws *ctx.WSContext, payload ctx.WSPayload) {
+    room := payload.Get("room")
+    c.ChatService.LeaveRoom(ws, room)
+}
+```
+
+## WSContext
+
+`WSContext` carries the WebSocket connection state for a single connection's lifetime.
+
+```go
+type WSContext struct {
+    exec   *ExecutionContext
+    cancel context.CancelFunc
+    Conn   *websocket.Conn
+    ConnID string
+    Message WSMessage
+}
+```
+
+### Accessing the Execution Context
+
+```go
+func (c *ChatController) MESSAGE(ws *ctx.WSContext, payload ctx.WSPayload) {
+    exec := ws.Exec() // connection-scoped ExecutionContext
+    exec.Set(ctx.MetaUser, userID)
+}
+```
+
+### Per-Message Context
+
+Each message can derive a short-lived child context with a SLA timeout:
+
+```go
+func (c *ChatController) SEND(ws *ctx.WSContext, payload ctx.WSPayload) {
+    msgExec, cancel := ws.NewMessageContext(5 * time.Second)
+    defer cancel()
+
+    // msgExec is cancelled after 5s or when the connection closes
+    c.ChatService.ProcessMessage(msgExec, payload)
+}
+```
+
+`NewMessageContext` calls `ctx.WithTimeout(ws.Exec(), d)` internally, so cancellation propagates from connection → message → any GoSafe goroutines.
+
+## WSPayload
+
+`WSPayload` is the deserialized payload from the incoming WebSocket message:
+
+```go
+func (c *ChatController) MESSAGE(ws *ctx.WSContext, payload ctx.WSPayload) {
+    text := payload.Get("text")      // string
+    userID := payload.Get("userID")  // string
+}
+```
+
+The incoming message format is JSON:
+
+```json
+{
+  "event": "message",
+  "payload": {
+    "text": "Hello, world!",
+    "userID": "user-123"
+  }
+}
+```
+
+## WSMessage
+
+The full incoming message structure:
+
+```go
+type WSMessage struct {
+    Event   string    `json:"event"`
+    Payload WSPayload `json:"payload"`
+}
+```
+
+Access via `ws.Message`:
+
+```go
+func (c *ChatController) MESSAGE(ws *ctx.WSContext, payload ctx.WSPayload) {
+    fmt.Println(ws.Message.Event) // "message"
+}
+```
+
+## Subscribed Events
+
+Clients declare which events they want to receive via a query parameter:
+
+```
+ws://localhost:3000/chat?events=message,join,leave
+```
+
+The `*` wildcard event means "all events". If `events` is not provided, the client receives all events.
+
+## Subprotocols
+
+WebSocket subprotocols are supported. Set the subprotocol via the `Sec-WebSocket-Protocol` header:
+
+```
+Sec-WebSocket-Protocol: v1.chat
+```
+
+Controllers can scope handlers to a specific subprotocol. The framework matches the client's requested subprotocol against the handler's configured subprotocol.
+
+## Sending Messages
+
+```go
+// Send to the current connection
+ws.Conn.Write([]byte(`{"event":"pong","payload":{}}`))
+```
+
+Use the `websocket.Message.Send` helper:
+
+```go
+import "golang.org/x/net/websocket"
+
+func sendEvent(conn *websocket.Conn, event string, data any) error {
+    payload, _ := json.Marshal(map[string]any{
+        "event":   event,
+        "payload": data,
+    })
+    return websocket.Message.Send(conn, string(payload))
+}
+```
+
+## Goroutine Safety in WS Handlers
+
+Always use `ctx.GoSafe` for async work in WS handlers:
+
+```go
+func (c *ChatController) MESSAGE(ws *ctx.WSContext, payload ctx.WSPayload) {
+    msgExec, cancel := ws.NewMessageContext(5 * time.Second)
+    defer cancel()
+
+    ctx.GoSafe(msgExec, func(c context.Context) {
+        // This goroutine is cancelled when msgExec times out
+        // OR when the WS connection is closed (ws.Cancel is called)
+        c.ChatService.ProcessAsync(c, payload)
+    }, func(err error, stack []byte) {
+        log.Printf("WS goroutine panic: %v", err)
+    })
+}
+```
+
+## Connection Lifecycle
+
+The framework:
+
+1. Creates a `WSContext` with its own `context.Background()`-rooted execution context.
+2. Calls `defer cancel()` on connection close, cancelling all derived per-message contexts and `GoSafe` goroutines.
+3. Dispatches each incoming message to the matching handler based on the `event` field.
+
+**Do not** derive WS execution context from the HTTP upgrade request context — it is cancelled immediately after the handshake.
+
+## WS Module Registration
+
+```go
+var ChatModule = func() *core.Module {
+    return core.ModuleBuilder().
+        Controllers(ChatController{}).
+        Providers(ChatService{}).
+        Build()
+}
+```
+
+Register in the app module just like REST modules.

@@ -1,0 +1,130 @@
+---
+title: Modules
+description: Modules are the primary organizational unit in Ginject. Learn how to create static and dynamic modules, configure global providers, and compose module graphs.
+---
+
+# Modules
+
+A **Module** is a class-like construct (a Go struct) that groups related controllers, providers, and sub-modules. The module graph describes how your application is wired together.
+
+## Static Modules
+
+A static module is a `func() *core.Module` variable — it is a singleton created exactly once per application lifecycle.
+
+```go
+var UserModule = func() *core.Module {
+    return core.ModuleBuilder().
+        Controllers(UserController{}).
+        Providers(UserService{}).
+        Build()
+}
+```
+
+Reference it from any parent module:
+
+```go
+var AppModule = func() *core.Module {
+    return core.ModuleBuilder().
+        Imports(UserModule).
+        Build()
+}
+```
+
+## Dynamic Modules
+
+Dynamic modules are instantiated with configuration arguments. They are defined as structs with a `New(...)` factory method.
+
+```go
+// config/config.module.go
+type ConfigModuleOptions struct {
+    FilePath string
+}
+
+type configModule struct {
+    opts ConfigModuleOptions
+}
+
+func NewConfigModule(opts ConfigModuleOptions) *configModule {
+    return &configModule{opts: opts}
+}
+
+func (m *configModule) New() *core.Module {
+    return core.ModuleBuilder().
+        Providers(ConfigService{FilePath: m.opts.FilePath}).
+        Build()
+}
+```
+
+Import a dynamic module by calling its factory:
+
+```go
+var AppModule = func() *core.Module {
+    return core.ModuleBuilder().
+        Imports(
+            NewConfigModule(ConfigModuleOptions{FilePath: ".env"}),
+        ).
+        Build()
+}
+```
+
+## Global Modules
+
+Setting `IsGlobal: true` on a module makes all its exported providers available to every other module without explicit imports.
+
+```go
+var CacheModule = func() *core.Module {
+    m := core.ModuleBuilder().
+        Providers(CacheService{}).
+        Build()
+    m.IsGlobal = true
+    return m
+}
+```
+
+The built-in `ConfigModule` and `CacheModule` are both designed to be used as global modules.
+
+## Module Lifecycle Hook
+
+A module can run initialization logic when the application is wired. Use `OnInit` for tasks like establishing database connections:
+
+```go
+var DatabaseModule = func() *core.Module {
+    db := &DatabaseService{}
+    m := core.ModuleBuilder().
+        Providers(db).
+        Build()
+    m.OnInit = func() {
+        if err := db.Connect(); err != nil {
+            panic(err)
+        }
+    }
+    return m
+}
+```
+
+## Module-Level Middleware
+
+Bind middleware that only applies to routes within the current module (and its sub-modules):
+
+```go
+var AdminModule = func() *core.Module {
+    m := core.ModuleBuilder().
+        Controllers(AdminController{}).
+        Providers(AdminService{}).
+        Build()
+
+    m.RESTMiddlewares = append(m.RESTMiddlewares, common.RESTLayer{
+        Fn: RequireAdminRole,
+    })
+    return m
+}
+```
+
+## ModuleBuilder API
+
+| Method | Description |
+|---|---|
+| `Imports(modules ...any)` | Import static or dynamic sub-modules |
+| `Controllers(cs ...Controller)` | Register controllers for this module |
+| `Providers(ps ...Provider)` | Register providers for this module |
+| `Build()` | Returns the configured `*core.Module` |

@@ -1,0 +1,68 @@
+---
+title: Giới thiệu
+description: Ginject là một web framework Go lấy cảm hứng từ NestJS với dependency injection. Kiến trúc module với propagation execution context cấp độ sản xuất.
+---
+
+# Giới thiệu
+
+Ginject là một web framework cho Go mang lại các mô hình kiến trúc của [NestJS](https://nestjs.com) vào hệ sinh thái Go — dependency injection, module composition, declarative routing, và một request pipeline theo lớp — trong khi vẫn tuân thủ các mô hình concurrency và context của Go.
+
+## Triết lý
+
+Ginject được xây dựng trên ba niềm tin:
+
+1. **Kiến trúc quan trọng hơn tối ưu hiệu năng** — tổ chức code thành modules và controllers giúp dễ test, mở rộng và suy luận hơn so với một registry handler phẳng.
+2. **Context propagation là bắt buộc** — mỗi goroutine được sinh ra trong một request phải có thể tiếp cận được qua `context.Done()`, không thì bạn sẽ có goroutine leaks.
+3. **Convention over configuration** — đặt tên handler là `READ_BY_ID` là đủ để đăng ký `GET /:id`. Không cần annotation và không cần sinh code lúc build.
+
+## Khái niệm cốt lõi
+
+| Khái niệm | Mô tả |
+|---|---|
+| **Module** | Đơn vị tổ chức. Nhóm các controller và provider. Có thể được import bởi các module khác. |
+| **Controller** | Xử lý các route HTTP hoặc WebSocket. Nhúng `common.REST` hoặc `common.WS`. |
+| **Provider** | Service có thể inject. Bất kỳ struct nào implement `NewProvider() core.Provider`. |
+| **ExecutionContext** | `context.Context` có phạm vi request với metadata. Được truyền qua toàn bộ pipeline. |
+| **Middleware** | Chạy trước guards, có thể ngắt pipeline. |
+| **Guard** | Quyết định liệu một request có được phép tiếp tục hay không. |
+| **Interceptor** | Bao quanh handler — xử lý trước/sau, transform response thông qua aggregation. |
+| **ExceptionFilter** | Bắt lỗi và chuyển đổi thành HTTP responses. |
+
+## Tổng quan nhanh
+
+```go
+package main
+
+import "github.com/dangduoc08/ginject/core"
+
+func main() {
+    app := core.New()
+    app.Create(AppModule)
+    app.Logger.Fatal("App", "error", app.Listen(3000))
+}
+```
+
+## Request Pipeline
+
+Mỗi HTTP request chạy qua pipeline xác định này:
+
+```
+GlobalMiddlewares → ModuleMiddlewares → Guards → Interceptors → Handler → Aggregation → Response
+                                                                                    ↑
+                                                                    ExceptionFilters (khi có lỗi)
+```
+
+Mỗi lớp có thể kết hợp và được bind toàn cục, theo module, hoặc theo route.
+
+## Module Graph
+
+```go
+// AppModule (gốc)
+//   ├── ConfigModule   (global, tải .env)
+//   ├── CacheModule    (global, LFU in-memory cache)
+//   └── UserModule
+//         ├── UserController  (REST: /users)
+//         └── UserService     (provider)
+```
+
+Các provider được khai báo trong một module chỉ khả dụng trong module đó trừ khi được export hoặc module được đánh dấu `IsGlobal: true`.

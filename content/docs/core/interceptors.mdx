@@ -1,0 +1,153 @@
+---
+title: Interceptors
+description: Interceptors wrap handlers for pre/post processing. Learn the Interceptable interface, the Aggregation pipeline operators, and how to transform responses.
+---
+
+# Interceptors
+
+Interceptors run after guards and wrap the handler. They receive an `*aggregation.Aggregation` which lets you transform, tap, time-out, or handle errors in the handler's response.
+
+## The Interceptable Interface
+
+```go
+type Interceptable interface {
+    Intercept(c *ctx.Context, agg *aggregation.Aggregation) any
+}
+```
+
+The `Intercept` method must call `agg.Pipe(operators...)` to invoke the handler and process its output.
+
+## Writing a Custom Interceptor
+
+```go
+import "github.com/dangduoc08/ginject/aggregation"
+
+type LoggingInterceptor struct{}
+
+func (i LoggingInterceptor) Intercept(c *ctx.Context, agg *aggregation.Aggregation) any {
+    start := time.Now()
+    result := agg.Pipe(
+        aggregation.Tap(func(c *ctx.Context, data any) {
+            duration := time.Since(start)
+            log.Printf("Handler completed in %s", duration)
+        }),
+    )
+    return result
+}
+```
+
+## Aggregation Operators
+
+### Transform
+
+Maps the handler response to a new value:
+
+```go
+result := agg.Pipe(
+    aggregation.Transform(func(c *ctx.Context, data any) any {
+        // Wrap all responses in a standard envelope
+        return map[string]any{
+            "data":    data,
+            "success": true,
+        }
+    }),
+)
+```
+
+### Tap
+
+Runs a side-effect without changing the response:
+
+```go
+result := agg.Pipe(
+    aggregation.Tap(func(c *ctx.Context, data any) {
+        // Log, emit metrics, audit trail, etc.
+        metrics.RecordResponse(c.Request.URL.Path, data)
+    }),
+)
+```
+
+### Timeout
+
+Enforces a deadline on the handler execution:
+
+```go
+result := agg.Pipe(
+    aggregation.Timeout(5 * time.Second),
+)
+```
+
+If the handler does not complete within the specified duration, the aggregation short-circuits and returns an error response.
+
+### Error
+
+Handles errors that occur during handler execution:
+
+```go
+result := agg.Pipe(
+    aggregation.Error(func(c *ctx.Context, err error) any {
+        log.Printf("Handler error: %v", err)
+        return nil
+    }),
+)
+```
+
+## Chaining Operators
+
+Operators can be chained in a single `Pipe` call:
+
+```go
+func (i *ApiInterceptor) Intercept(c *ctx.Context, agg *aggregation.Aggregation) any {
+    return agg.Pipe(
+        aggregation.Timeout(10*time.Second),
+        aggregation.Transform(func(c *ctx.Context, data any) any {
+            return ApiResponse{Data: data, RequestID: c.Request.Header.Get("X-Request-ID")}
+        }),
+        aggregation.Tap(func(c *ctx.Context, data any) {
+            metrics.IncrementCounter("api.requests")
+        }),
+    )
+}
+```
+
+## Interceptor Data
+
+You can set data before calling `Pipe` that the handler can read via the aggregation:
+
+```go
+func (i *CacheInterceptor) Intercept(c *ctx.Context, agg *aggregation.Aggregation) any {
+    cacheKey := buildCacheKey(c.Request)
+
+    if cached, ok := getFromCache(cacheKey); ok {
+        return cached
+    }
+
+    result := agg.Pipe(
+        aggregation.Tap(func(c *ctx.Context, data any) {
+            setInCache(cacheKey, data, 5*time.Minute)
+        }),
+    )
+    return result
+}
+```
+
+## Applying Interceptors
+
+```go
+// Global
+app.UseInterceptor(LoggingInterceptor{})
+
+// Controller-level
+func (c UserController) NewController() common.Controller {
+    c.Prefix("users")
+    c.BindInterceptor(LoggingInterceptor{})
+    return c
+}
+
+// Handler-level
+func (c UserController) NewController() common.Controller {
+    c.Prefix("users")
+    c.BindInterceptor(CacheInterceptor{}, c.READ, c.READ_BY_ID)
+    return c
+}
+```

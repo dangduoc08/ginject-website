@@ -1,0 +1,47 @@
+{
+  "nav": {
+    "docs": "Docs",
+    "github": "GitHub",
+    "getStarted": "Get Started"
+  },
+  "hero": {
+    "badge": "Production-Ready Go Framework",
+    "title": "Build Go APIs with\nArchitecture that Scales",
+    "subtitle": "Ginject brings NestJS-inspired dependency injection to Go. Module-based architecture, deterministic cancellation, zero goroutine leaks.",
+    "cta": "Get Started",
+    "secondary": "View on GitHub",
+    "version": "Latest: v1.0"
+  },
+  "features": {
+    "title": "Everything you need",
+    "subtitle": "Production-grade primitives built into the framework",
+    "di": {
+      "title": "Dependency Injection",
+      "desc": "NestJS-inspired Module→Controller→Provider pattern with reflection-based auto-injection. No tags, no annotations."
+    },
+    "exec": {
+      "title": "Execution Context",
+      "desc": "Every request carries a cancellable context.Context with metadata and hierarchical SLA timeouts. WS connections get their own root context."
+    },
+    "goroutine": {
+      "title": "Zero Goroutine Leaks",
+      "desc": "GoSafe launcher checks ctx.Done() before spawning. All WS goroutines are lifecycle-safe and cancel when the connection closes."
+    },
+    "ws": {
+      "title": "WebSocket Native",
+      "desc": "WS controllers with event-based routing. Per-connection ExecutionContext, per-message SLA timeouts, and clean shutdown."
+    },
+    "middleware": {
+      "title": "Pipeline Architecture",
+      "desc": "Composable middleware, guards, interceptors, and exception filters — global or per-route. Built-in CORS, Helmet, CSRF, RequestLogger."
+    },
+    "cache": {
+      "title": "Built-in Cache",
+      "desc": "Sharded in-memory LFU cache with TTL, SetNX atomic operations, Keys/TTL introspection, and a pluggable interface."
+    }
+  },
+  "footer": {
+    "license": "MIT License",
+    "madeWith": "Made with love for the Go community"
+  }
+}

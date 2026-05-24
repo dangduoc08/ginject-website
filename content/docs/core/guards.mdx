@@ -1,0 +1,166 @@
+---
+title: Guards
+description: Guards decide whether a request proceeds. Learn the Guarder interface, the built-in ThrottlerGuard with FixedWindow, SlidingWindow, and TokenBucket strategies, and how to write custom guards.
+---
+
+# Guards
+
+Guards run after middleware and before interceptors. A guard inspects the incoming request and returns `true` to let the request proceed, or `false` (or panics with an exception) to reject it.
+
+## The Guarder Interface
+
+```go
+type Guarder interface {
+    CanActivate(c *ctx.Context) bool
+}
+```
+
+## Writing a Custom Guard
+
+```go
+type JWTGuard struct{}
+
+func (g JWTGuard) CanActivate(c *ctx.Context) bool {
+    token := c.Request.Header.Get("Authorization")
+    if token == "" {
+        panic(exception.UnauthorizedException("missing authorization header"))
+    }
+    claims, err := parseJWT(token)
+    if err != nil {
+        panic(exception.UnauthorizedException("invalid token"))
+    }
+    // Store parsed user in context for downstream handlers
+    c.Set("user", claims.User)
+    return true
+}
+```
+
+## Global Guard
+
+Apply a guard to every route in the application:
+
+```go
+app.UseGuard(JWTGuard{})
+```
+
+## Controller-Level Guard
+
+```go
+func (c UserController) NewController() common.Controller {
+    c.Prefix("users")
+    c.BindGuard(JWTGuard{})
+    return c
+}
+```
+
+## Handler-Level Guard
+
+```go
+func (c UserController) NewController() common.Controller {
+    c.Prefix("users")
+    // Only CREATE and DELETE require admin
+    c.BindGuard(AdminGuard{}, c.CREATE, c.DELETE_BY_ID)
+    return c
+}
+```
+
+## Built-in ThrottlerGuard
+
+Ginject ships a production-grade rate limiter with three strategies.
+
+### Creating the Throttler
+
+```go
+import "github.com/dangduoc08/ginject/guards"
+
+throttler := guards.NewThrottler(guards.ThrottlerOptions{
+    Limit:    100,           // max requests
+    TTL:      time.Minute,  // window duration
+    Strategy: guards.FixedWindow,
+})
+```
+
+`NewThrottler` applies sensible defaults: `Limit=100`, `TTL=1m`, strategy=`FixedWindow`, key=client IP, backend=in-memory cache.
+
+### FixedWindow
+
+```go
+throttler := guards.NewThrottler(guards.ThrottlerOptions{
+    Limit:    100,
+    TTL:      time.Minute,
+    Strategy: guards.FixedWindow,
+})
+```
+
+Counts requests in fixed time buckets. Fast and simple, but allows a burst of 2× the limit at window boundaries.
+
+### SlidingWindow
+
+```go
+throttler := guards.NewThrottler(guards.ThrottlerOptions{
+    Limit:    100,
+    TTL:      time.Minute,
+    Strategy: guards.SlidingWindow,
+})
+```
+
+Smoothly counts requests using a sliding time window. No boundary burst, more accurate than fixed window.
+
+### TokenBucket
+
+```go
+throttler := guards.NewThrottler(guards.ThrottlerOptions{
+    Limit: 10,              // bucket capacity
+    TTL:   time.Second,     // refill period
+    Strategy: guards.TokenBucket,
+})
+```
+
+Allows bursts up to `Limit` tokens, then enforces a steady refill rate. Ideal for APIs with bursty but bounded traffic.
+
+### Custom Key Function
+
+By default, the throttler keys by client IP. Override to key by user ID, API key, or any request property:
+
+```go
+throttler := guards.NewThrottler(guards.ThrottlerOptions{
+    Limit: 1000,
+    TTL:   time.Hour,
+    KeyFunc: func(c *ctx.Context) string {
+        return c.Request.Header.Get("X-API-Key")
+    },
+})
+```
+
+### Custom Cache Backend
+
+Use any `cache.Cache` implementation as the store (e.g., Redis):
+
+```go
+throttler := guards.NewThrottler(guards.ThrottlerOptions{
+    Limit: 100,
+    TTL:   time.Minute,
+    Store: redisCache, // implements cache.Cache
+})
+```
+
+### Rate Limit Response Headers
+
+The ThrottlerGuard automatically sets:
+
+| Header | Value |
+|---|---|
+| `X-RateLimit-Limit` | The configured limit |
+| `X-RateLimit-Remaining` | Remaining requests in the window |
+| `X-RateLimit-Reset` | Unix timestamp when the window resets |
+| `Retry-After` | Seconds to wait (only on `429 Too Many Requests`) |
+
+### Apply Globally
+
+```go
+app.UseGuard(guards.NewThrottler(guards.ThrottlerOptions{
+    Limit:    100,
+    TTL:      time.Minute,
+    Strategy: guards.SlidingWindow,
+}))
+```

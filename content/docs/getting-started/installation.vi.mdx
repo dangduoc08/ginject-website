@@ -1,0 +1,90 @@
+---
+title: Cài đặt
+description: Thiết lập một dự án Ginject mới từ đầu. Bao gồm các yêu cầu tiên quyết, khởi tạo module và cấu trúc thư mục.
+---
+
+# Cài đặt
+
+## Yêu cầu tiên quyết
+
+- Go 1.22 trở lên
+- Terminal có `git`
+
+## Khởi tạo dự án mới
+
+```bash
+mkdir myapp && cd myapp
+go mod init github.com/yourname/myapp
+```
+
+## Thêm Ginject
+
+```bash
+go get github.com/dangduoc08/ginject@latest
+```
+
+Lệnh này cài đặt Ginject và các dependency của nó (`golang.org/x/net` cho WebSocket).
+
+## Cấu trúc thư mục được khuyến nghị
+
+```
+myapp/
+├── go.mod
+├── go.sum
+├── main.go
+│
+├── app.module.go        ← module gốc kết nối mọi thứ
+│
+├── users/
+│   ├── user.module.go
+│   ├── user.controller.go
+│   ├── user.service.go
+│   └── user.dto.go
+│
+└── config/
+    └── config.module.go  ← tùy chọn: thiết lập ConfigModule
+```
+
+## Kiểm tra cài đặt
+
+Tạo `main.go`:
+
+```go
+package main
+
+import "github.com/dangduoc08/ginject/core"
+
+var AppModule = func() *core.Module {
+    return core.ModuleBuilder().Build()
+}
+
+func main() {
+    app := core.New()
+    app.Create(AppModule)
+    app.Logger.Fatal("App", "error", app.Listen(3000))
+}
+```
+
+Chạy:
+
+```bash
+go run main.go
+```
+
+Bạn sẽ thấy output từ structured logger của Ginject và server đang lắng nghe trên cổng 3000.
+
+## Biến môi trường
+
+`ConfigModule` tích hợp của Ginject đọc các file `.env`. Tạo một file ở thư mục gốc của dự án:
+
+```bash
+# .env
+APP_PORT=3000
+APP_ENV=development
+DB_HOST=localhost
+DB_PORT=5432
+```
+
+## Hỗ trợ IDE
+
+Để có trải nghiệm chỉnh sửa Go tốt nhất, hãy đảm bảo editor của bạn đã cài đặt Go language server (`gopls`). Không cần plugin đặc biệt cho Ginject; framework là Go thuần túy không có code generation.

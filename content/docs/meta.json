@@ -1,0 +1,5 @@
+{
+  "title": "Ginject",
+  "root": true,
+  "pages": ["getting-started", "core", "advanced", "api"]
+}

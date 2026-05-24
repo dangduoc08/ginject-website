@@ -1,0 +1,47 @@
+{
+  "nav": {
+    "docs": "Tài liệu",
+    "github": "GitHub",
+    "getStarted": "Bắt đầu"
+  },
+  "hero": {
+    "badge": "Framework Go sẵn sàng cho sản xuất",
+    "title": "Xây dựng Go API với\nKiến trúc mở rộng tốt",
+    "subtitle": "Ginject mang mô hình dependency injection của NestJS vào Go. Kiến trúc module, hủy bỏ xác định, không rò rỉ goroutine.",
+    "cta": "Bắt đầu ngay",
+    "secondary": "Xem trên GitHub",
+    "version": "Phiên bản mới nhất: v1.0"
+  },
+  "features": {
+    "title": "Tất cả những gì bạn cần",
+    "subtitle": "Các nguyên thủy cấp độ sản xuất được tích hợp vào framework",
+    "di": {
+      "title": "Dependency Injection",
+      "desc": "Mô hình Module→Controller→Provider theo phong cách NestJS với auto-injection dựa trên reflection. Không cần tags hay annotations."
+    },
+    "exec": {
+      "title": "Execution Context",
+      "desc": "Mỗi request mang theo một context.Context có thể hủy với metadata và SLA timeout phân cấp. Kết nối WS có context gốc riêng."
+    },
+    "goroutine": {
+      "title": "Không rò rỉ Goroutine",
+      "desc": "GoSafe kiểm tra ctx.Done() trước khi khởi tạo goroutine. Tất cả goroutine WS an toàn về vòng đời và hủy khi kết nối đóng."
+    },
+    "ws": {
+      "title": "WebSocket Native",
+      "desc": "Controller WS với routing dựa trên sự kiện. ExecutionContext per-connection, SLA timeout per-message, và tắt sạch sẽ."
+    },
+    "middleware": {
+      "title": "Kiến trúc Pipeline",
+      "desc": "Middleware, guards, interceptors và exception filters có thể kết hợp — toàn cục hoặc per-route. Tích hợp CORS, Helmet, CSRF, RequestLogger."
+    },
+    "cache": {
+      "title": "Cache tích hợp",
+      "desc": "Cache LFU trong bộ nhớ với sharding, TTL, thao tác SetNX atomic, introspection Keys/TTL và interface có thể thay thế."
+    }
+  },
+  "footer": {
+    "license": "Giấy phép MIT",
+    "madeWith": "Được tạo với tình yêu cho cộng đồng Go"
+  }
+}

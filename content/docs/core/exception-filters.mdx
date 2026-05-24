@@ -1,0 +1,129 @@
+---
+title: Exception Filters
+description: Exception filters catch errors thrown during request processing and translate them to HTTP responses. Learn the ExceptionFilterable interface and built-in exceptions.
+---
+
+# Exception Filters
+
+Exception filters catch errors that propagate through the pipeline and translate them into structured HTTP responses. By default, unhandled panics produce a `500 Internal Server Error`.
+
+## The ExceptionFilterable Interface
+
+```go
+type ExceptionFilterable interface {
+    Catch(e *exception.Exception, c *ctx.Context)
+}
+```
+
+## Built-in Exception Types
+
+Ginject's `exception` package provides typed HTTP errors. Throw them with `panic`:
+
+```go
+import "github.com/dangduoc08/ginject/exception"
+
+// 400 Bad Request
+panic(exception.BadRequestException("invalid email format"))
+
+// 401 Unauthorized
+panic(exception.UnauthorizedException("token expired"))
+
+// 403 Forbidden
+panic(exception.ForbiddenException("insufficient permissions"))
+
+// 404 Not Found
+panic(exception.NotFoundException("user not found"))
+
+// 409 Conflict
+panic(exception.ConflictException("email already exists"))
+
+// 422 Unprocessable Entity
+panic(exception.UnprocessableEntityException("validation failed"))
+
+// 429 Too Many Requests
+panic(exception.TooManyRequestsException("rate limit exceeded"))
+
+// 500 Internal Server Error
+panic(exception.InternalServerErrorException("database connection failed"))
+```
+
+## Writing a Custom Filter
+
+```go
+type HttpExceptionFilter struct{}
+
+func (f HttpExceptionFilter) Catch(e *exception.Exception, c *ctx.Context) {
+    c.Response.Header().Set("Content-Type", "application/json")
+    c.Response.WriteHeader(e.Status)
+    json.NewEncoder(c.Response).Encode(map[string]any{
+        "statusCode": e.Status,
+        "message":    e.Message,
+        "timestamp":  time.Now().UTC().Format(time.RFC3339),
+        "path":       c.Request.URL.Path,
+    })
+}
+```
+
+## Custom Error Response Shape
+
+```go
+type ErrorResponse struct {
+    Error     string `json:"error"`
+    Code      int    `json:"code"`
+    RequestID string `json:"requestId"`
+}
+
+type AppExceptionFilter struct{}
+
+func (f AppExceptionFilter) Catch(e *exception.Exception, c *ctx.Context) {
+    requestID := c.Request.Header.Get("X-Request-ID")
+    resp := ErrorResponse{
+        Error:     e.Message,
+        Code:      e.Status,
+        RequestID: requestID,
+    }
+    c.Response.Header().Set("Content-Type", "application/json")
+    c.Response.WriteHeader(e.Status)
+    json.NewEncoder(c.Response).Encode(resp)
+}
+```
+
+## Applying Exception Filters
+
+```go
+// Global — catches errors from all routes
+app.UseExceptionFilter(AppExceptionFilter{})
+
+// Controller-level
+func (c UserController) NewController() common.Controller {
+    c.Prefix("users")
+    c.BindExceptionFilter(UserExceptionFilter{})
+    return c
+}
+```
+
+## Exception Filter Scope
+
+Multiple filters can be active for a request. The most specific filter (handler-level > controller-level > module-level > global) handles the exception.
+
+## Working with the Exception Type
+
+```go
+type Exception struct {
+    Status  int
+    Message string
+}
+```
+
+Access the fields in `Catch`:
+
+```go
+func (f LoggingFilter) Catch(e *exception.Exception, c *ctx.Context) {
+    if e.Status >= 500 {
+        log.Printf("Server error %d on %s: %s", e.Status, c.Request.URL.Path, e.Message)
+    }
+    // Delegate to default handling
+    c.Response.WriteHeader(e.Status)
+    fmt.Fprintf(c.Response, `{"error":"%s"}`, e.Message)
+}
+```

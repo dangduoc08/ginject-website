@@ -1,0 +1,92 @@
+---
+title: Installation
+description: Set up a new Ginject project from scratch. Covers prerequisites, module initialization, and directory structure.
+---
+
+# Installation
+
+## Prerequisites
+
+- Go 1.22 or later
+- A terminal with `git` available
+
+## Initialize a New Project
+
+```bash
+mkdir myapp && cd myapp
+go mod init github.com/yourname/myapp
+```
+
+## Add Ginject
+
+```bash
+go get github.com/dangduoc08/ginject@latest
+```
+
+This installs Ginject and its dependencies (`golang.org/x/net` for WebSocket support).
+
+## Recommended Directory Structure
+
+```
+myapp/
+├── go.mod
+├── go.sum
+├── main.go
+│
+├── app.module.go        ← root module wiring everything together
+│
+├── users/
+│   ├── user.module.go
+│   ├── user.controller.go
+│   ├── user.service.go
+│   └── user.dto.go
+│
+└── config/
+    └── config.module.go  ← optional: ConfigModule setup
+```
+
+## Verify Installation
+
+Create `main.go`:
+
+```go
+package main
+
+import "github.com/dangduoc08/ginject/core"
+
+var AppModule = func() *core.Module {
+    return core.ModuleBuilder().Build()
+}
+
+func main() {
+    app := core.New()
+    app.Create(AppModule)
+    app.Logger.Fatal("App", "error", app.Listen(3000))
+}
+```
+
+Run it:
+
+```bash
+go run main.go
+```
+
+You should see Ginject's structured logger output and a server listening on port 3000.
+
+## Environment Variables
+
+Ginject's built-in `ConfigModule` reads `.env` files. Create one at the project root:
+
+```bash
+# .env
+APP_PORT=3000
+APP_ENV=development
+DB_HOST=localhost
+DB_PORT=5432
+```
+
+See the [Config module docs](/docs/advanced/caching) for typed struct binding.
+
+## IDE Support
+
+For best Go editing support, ensure your editor has the Go language server (`gopls`) installed. No special plugins are needed for Ginject; the framework is plain Go with no code generation.

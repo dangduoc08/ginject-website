@@ -1,0 +1,217 @@
+---
+title: Quick Start
+description: Build a fully working CRUD REST API with Ginject in under 5 minutes. Covers controllers, providers, modules, and the main entry point.
+---
+
+# Quick Start
+
+This guide walks you through building a `users` REST API with full CRUD, a provider for business logic, and a module to wire them together.
+
+## 1. Define the DTO and model
+
+```go
+// users/user.dto.go
+package users
+
+type User struct {
+    ID   string `json:"id"`
+    Name string `json:"name"`
+    Email string `json:"email"`
+}
+
+type CreateUserDTO struct {
+    Name  string `json:"name"`
+    Email string `json:"email"`
+}
+```
+
+## 2. Write the Provider (service)
+
+```go
+// users/user.service.go
+package users
+
+import (
+    "github.com/dangduoc08/ginject/core"
+    "github.com/dangduoc08/ginject/ctx"
+)
+
+type UserService struct{}
+
+func (s UserService) NewProvider() core.Provider {
+    return s
+}
+
+func (s *UserService) FindAll(exec *ctx.ExecutionContext) []User {
+    // In a real app, query your database here using exec as the context
+    return []User{
+        {ID: "1", Name: "Alice", Email: "alice@example.com"},
+        {ID: "2", Name: "Bob", Email: "bob@example.com"},
+    }
+}
+
+func (s *UserService) FindOne(exec *ctx.ExecutionContext, id string) *User {
+    users := s.FindAll(exec)
+    for _, u := range users {
+        if u.ID == id {
+            return &u
+        }
+    }
+    return nil
+}
+
+func (s *UserService) Create(exec *ctx.ExecutionContext, dto CreateUserDTO) User {
+    return User{ID: "3", Name: dto.Name, Email: dto.Email}
+}
+
+func (s *UserService) Delete(exec *ctx.ExecutionContext, id string) bool {
+    return true
+}
+```
+
+## 3. Write the Controller
+
+```go
+// users/user.controller.go
+package users
+
+import (
+    "github.com/dangduoc08/ginject/common"
+    "github.com/dangduoc08/ginject/ctx"
+    "github.com/dangduoc08/ginject/exception"
+)
+
+type UserController struct {
+    common.REST
+    UserService // injected automatically
+}
+
+func (c UserController) NewController() common.Controller {
+    c.Prefix("users")
+    return c
+}
+
+// GET /users
+func (c *UserController) READ(exec *ctx.ExecutionContext, query ctx.Query) []User {
+    return c.UserService.FindAll(exec)
+}
+
+// GET /users/:id
+func (c *UserController) READ_BY_ID(exec *ctx.ExecutionContext, param ctx.Param) User {
+    id := param.Get("id")
+    user := c.UserService.FindOne(exec, id)
+    if user == nil {
+        panic(exception.NotFoundException("user not found"))
+    }
+    return *user
+}
+
+// POST /users
+func (c *UserController) CREATE(exec *ctx.ExecutionContext, body ctx.Body) User {
+    var dto CreateUserDTO
+    body.Bind(&dto)
+    return c.UserService.Create(exec, dto)
+}
+
+// DELETE /users/:id
+func (c *UserController) DELETE_BY_ID(exec *ctx.ExecutionContext, param ctx.Param) bool {
+    id := param.Get("id")
+    return c.UserService.Delete(exec, id)
+}
+```
+
+Method names are automatically parsed into routes — see [Routing](/docs/core/routing) for the full token reference.
+
+## 4. Define the Module
+
+```go
+// users/user.module.go
+package users
+
+import "github.com/dangduoc08/ginject/core"
+
+var UserModule = func() *core.Module {
+    return core.ModuleBuilder().
+        Controllers(UserController{}).
+        Providers(UserService{}).
+        Build()
+}
+```
+
+## 5. Root Module
+
+```go
+// app.module.go
+package main
+
+import "github.com/dangduoc08/ginject/core"
+
+var AppModule = func() *core.Module {
+    return core.ModuleBuilder().
+        Imports(
+            users.UserModule,
+        ).
+        Build()
+}
+```
+
+## 6. Entry Point
+
+```go
+// main.go
+package main
+
+import (
+    "time"
+
+    "github.com/dangduoc08/ginject/core"
+    "github.com/dangduoc08/ginject/middleware"
+)
+
+func main() {
+    app := core.New()
+    app.Create(AppModule)
+
+    // Apply global middleware
+    app.UseMiddleware(
+        middleware.CORS(middleware.CORSOptions{
+            AllowedOrigins: []string{"*"},
+            AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+        }),
+        middleware.RequestLogger(),
+    )
+
+    app.Logger.Fatal("App", "error", app.Listen(3000))
+}
+```
+
+## 7. Run It
+
+```bash
+go run .
+```
+
+Test the API:
+
+```bash
+# List users
+curl http://localhost:3000/users
+
+# Get one user
+curl http://localhost:3000/users/1
+
+# Create a user
+curl -X POST http://localhost:3000/users \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Charlie","email":"charlie@example.com"}'
+
+# Delete a user
+curl -X DELETE http://localhost:3000/users/1
+```
+
+## What's Next
+
+- Learn about the full [routing token reference](/docs/core/routing)
+- Understand [Modules](/docs/core/modules) and how to compose them
+- Explore [Guards](/docs/core/guards) for authentication
+- Dive into [ExecutionContext](/docs/advanced/execution-context) for proper context propagation
