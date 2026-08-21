@@ -2,46 +2,64 @@
   "nav": {
     "docs": "Tài liệu",
     "github": "GitHub",
+    "cta": "Bắt đầu",
+    "architecture": "Kiến trúc",
     "getStarted": "Bắt đầu"
   },
   "hero": {
-    "badge": "Framework Go sẵn sàng cho sản xuất",
-    "title": "Xây dựng Go API với\nKiến trúc mở rộng tốt",
-    "subtitle": "Ginject mang mô hình dependency injection của NestJS vào Go. Kiến trúc module, hủy bỏ xác định, không rò rỉ goroutine.",
-    "cta": "Bắt đầu ngay",
+    "badge": "Framework Go Sẵn sàng cho Production",
+    "subtitle": "Ginject mang dependency injection lấy cảm hứng từ NestJS đến Go. Kiến trúc dựa trên module, hủy bỏ context xác định, không rò rỉ goroutine.",
+    "cta": "Bắt đầu",
     "secondary": "Xem trên GitHub",
     "version": "Phiên bản mới nhất: v1.0"
   },
   "features": {
-    "title": "Tất cả những gì bạn cần",
-    "subtitle": "Các nguyên thủy cấp độ sản xuất được tích hợp vào framework",
+    "title": "Mọi thứ bạn cần",
+    "subtitle": "Các thành phần production-grade được tích hợp sẵn vào framework",
     "di": {
       "title": "Dependency Injection",
-      "desc": "Mô hình Module→Controller→Provider theo phong cách NestJS với auto-injection dựa trên reflection. Không cần tags hay annotations."
+      "desc": "Mô hình Module→Controller→Provider lấy cảm hứng từ NestJS với auto-injection dựa trên reflection. Không cần tag, không cần annotation."
     },
     "exec": {
       "title": "Execution Context",
-      "desc": "Mỗi request mang theo một context.Context có thể hủy với metadata và SLA timeout phân cấp. Kết nối WS có context gốc riêng."
+      "desc": "Mỗi request mang một context.Context có thể hủy bỏ với metadata và SLA timeout phân cấp. Các kết nối WS có root context riêng của chúng."
     },
     "goroutine": {
       "title": "Không rò rỉ Goroutine",
-      "desc": "GoSafe kiểm tra ctx.Done() trước khi khởi tạo goroutine. Tất cả goroutine WS an toàn về vòng đời và hủy khi kết nối đóng."
+      "desc": "Trình khởi chạy GoSafe kiểm tra ctx.Done() trước khi tạo. Tất cả các goroutine WS đều an toàn vòng đời và hủy bỏ khi kết nối đóng."
     },
     "ws": {
-      "title": "WebSocket Native",
-      "desc": "Controller WS với routing dựa trên sự kiện. ExecutionContext per-connection, SLA timeout per-message, và tắt sạch sẽ."
+      "title": "WebSocket Tích hợp",
+      "desc": "Các controller WS với định tuyến dựa trên event. ExecutionContext theo kết nối, SLA timeout theo message, và tắt sạch."
     },
     "middleware": {
       "title": "Kiến trúc Pipeline",
-      "desc": "Middleware, guards, interceptors và exception filters có thể kết hợp — toàn cục hoặc per-route. Tích hợp CORS, Helmet, CSRF, RequestLogger."
+      "desc": "Middleware, guard, interceptor, và exception filter có thể kết hợp - toàn cục hoặc theo route. Tích hợp sẵn CORS, Helmet, CSRF, RequestLogger."
     },
     "cache": {
-      "title": "Cache tích hợp",
-      "desc": "Cache LFU trong bộ nhớ với sharding, TTL, thao tác SetNX atomic, introspection Keys/TTL và interface có thể thay thế."
+      "title": "Cache Tích hợp",
+      "desc": "Cache LFU trong bộ nhớ sharded với TTL, hoạt động nguyên tử SetNX, nội suy Keys/TTL, và giao diện có thể cắm."
     }
   },
   "footer": {
     "license": "Giấy phép MIT",
-    "madeWith": "Được tạo với tình yêu cho cộng đồng Go"
+    "madeWith": "Tạo với yêu thương cho cộng đồng Go"
+  },
+  "architecture": {
+    "title": "Multi Pipelines, One Stage",
+    "subtitle": "Kiến trúc thống nhất cho tất cả các transport",
+    "httpTitle": "HTTP Request Lifecycle",
+    "wsTitle": "WebSocket Message Lifecycle",
+    "statefulness": "Stateless",
+    "wsStatefulness": "Stateful"
+  },
+  "differentiators": {
+    "cta": "Tại sao Ginject",
+    "title": "Xây dựng Khác Biệt",
+    "subtitle": "Một framework được thiết kế cho cách các developer thực sự xây dựng các ứng dụng."
+  },
+  "codePreview": {
+    "title": "Convention Over Configuration",
+    "subtitle": "Không cần annotation. Không cần code generation. Chỉ là Go. Tên method trở thành route, type trở thành dependency - framework không can thiệp."
   }
 }

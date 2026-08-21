@@ -16,9 +16,32 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { locale, slug } = await params;
   const page = source.getPage(slug, locale);
   if (!page) return {};
+
+  const baseUrl = 'https://ginject.dev';
+  const slugPath = slug ? `/${slug.join('/')}` : '';
+  const enUrl = `${baseUrl}/docs${slugPath}`;
+  const viUrl = `${baseUrl}/vi/docs${slugPath}`;
+  const canonicalUrl = locale === 'en' ? enUrl : viUrl;
+
   return {
     title: `${page.data.title} | Ginject`,
-    description: page.data.description,
+    description: page.data.description || `Learn about ${page.data.title} in Ginject documentation`,
+    alternates: {
+      canonical: canonicalUrl,
+      languages: {
+        en: enUrl,
+        vi: viUrl,
+        'x-default': enUrl,
+      },
+    },
+    openGraph: {
+      title: `${page.data.title} | Ginject Documentation`,
+      description: page.data.description || `Learn about ${page.data.title} in Ginject`,
+      type: 'article',
+      url: canonicalUrl,
+      locale: locale === 'en' ? 'en_US' : 'vi_VN',
+      alternateLocale: locale === 'en' ? 'vi_VN' : 'en_US',
+    },
   };
 }
 

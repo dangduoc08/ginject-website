@@ -2,11 +2,12 @@
   "nav": {
     "docs": "Docs",
     "github": "GitHub",
+    "cta": "Get Started",
+    "architecture": "Architecture",
     "getStarted": "Get Started"
   },
   "hero": {
     "badge": "Production-Ready Go Framework",
-    "title": "Build Go APIs with\nArchitecture that Scales",
     "subtitle": "Ginject brings NestJS-inspired dependency injection to Go. Module-based architecture, deterministic cancellation, zero goroutine leaks.",
     "cta": "Get Started",
     "secondary": "View on GitHub",
@@ -43,5 +44,22 @@
   "footer": {
     "license": "MIT License",
     "madeWith": "Made with love for the Go community"
+  },
+  "architecture": {
+    "title": "Multi Pipelines, One Stage",
+    "subtitle": "Unified architecture for all transports",
+    "httpTitle": "HTTP Request Lifecycle",
+    "wsTitle": "WebSocket Message Lifecycle",
+    "statefulness": "Stateless",
+    "wsStatefulness": "Stateful"
+  },
+  "differentiators": {
+    "cta": "Why Ginject",
+    "title": "Built Different",
+    "subtitle": "A framework designed for how developers actually build applications."
+  },
+  "codePreview": {
+    "title": "Convention Over Configuration",
+    "subtitle": "No annotations. No code generation. Just Go. Method names become routes, types become dependencies—the framework stays out of your way."
   }
 }

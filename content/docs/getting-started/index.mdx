@@ -15,18 +15,541 @@ Ginject is built around three beliefs:
 2. **Context propagation is non-negotiable** — every goroutine spawned during a request must be reachable by `context.Done()`, or you have goroutine leaks.
 3. **Convention over configuration** — naming a handler `READ_BY_ID` should be enough to register `GET /:id`. No annotations and no build-time code generation required.
 
-## Core Concepts
+## Multi Pipelines, One Stage
+
+Ginject's core architectural insight is that **multiple transport protocols can share a unified processing model**. Whether you're building HTTP REST APIs, real-time WebSocket servers, or future transports, the application logic remains the same.
+
+### What is a Pipeline?
+
+A **pipeline** represents how a request from a specific transport (HTTP, WebSocket) flows through your application:
+
+- **HTTP Pipeline**: Request arrives via `GET /users/123` → flows through processing stages → sends HTTP response
+- **WebSocket Pipeline**: Client sends `{ event: "message", data: {...} }` → flows through processing stages → sends reply back
+
+Each transport has its own transport-specific mechanics, but once the request enters the application, it follows the same processing stages.
+
+### Why Multiple Transports?
+
+Different communication patterns have different requirements:
+
+- **HTTP**: Stateless request-response cycles, perfect for public APIs
+- **WebSocket**: Stateful bidirectional communication, perfect for real-time features (notifications, chat, collaboration)
+
+Rather than building two separate applications, Ginject lets you use the same guards, middleware, interceptors, and handlers for both.
+
+### What is "One Stage"?
+
+"One Stage" means all transports share the same processing stages:
+
+```
+Middleware → Guard → Interceptor → Handler → Exception Filter
+```
+
+Whether a request comes from HTTP or WebSocket, it passes through the same stages in the same order. This is the key to code reuse: you write a guard once, and it protects both HTTP endpoints and WebSocket events.
+
+### Example: Auth Guard for Both HTTP and WebSocket
+
+```go
+type AuthGuard struct {
+    ConfigService config.ConfigService
+}
+
+func (g AuthGuard) CanActivate(c *ctx.HTTPContext) bool {
+    // HTTP guard: checks Authorization header
+    return c.Header().Get("Authorization") == g.ConfigService.Get("SECRET")
+}
+
+func (g AuthGuard) CanActivate(c *ctx.WSContext) bool {
+    // WebSocket guard: same logic, checks payload
+    return c.WSPayload().Get("token") == g.ConfigService.Get("SECRET")
+}
+
+// Usage in both HTTP and WebSocket controllers
+c.BindGuard(AuthGuard{}, c.READ, c.DELETE)  // Protects HTTP
+c.BindGuard(AuthGuard{}, c.MESSAGE)         // Protects WebSocket event
+```
+
+The guard implementation is type-aware — Ginject inspects the `CanActivate` signature and applies the right one to the right transport. **Single logic, multiple transports.**
+
+---
+
+## Transports
+
+Ginject supports two primary transports out of the box. Each transport has its own characteristics, but both use the same processing stages.
+
+### HTTP
+
+**What it is**: Standard HTTP/1.1 request-response protocol for REST APIs.
+
+**When to use**:
+- Public APIs consumed by web/mobile clients
+- Stateless request-response patterns
+- APIs that need to be behind CDNs or load balancers
+- Browser-based applications
+
+**Lifecycle**:
+
+```
+1. Client sends HTTP request (GET, POST, PUT, PATCH, DELETE, OPTIONS)
+2. Framework matches request to handler based on method + path + version
+3. Request flows through pipeline stages (middleware → guard → interceptor → handler → exception filter)
+4. Handler returns response data
+5. Interceptors post-process response
+6. Framework serializes response to JSON/text
+7. HTTP response sent back to client
+```
+
+**How it integrates with One Stage**:
+
+All HTTP handlers receive the same stages. Here's a simple example:
+
+```go
+type UserController struct {
+    common.REST
+    UserService UserService
+}
+
+func (c UserController) NewController() core.Controller {
+    c.BindGuard(AuthGuard{}, c.CREATE, c.DELETE)
+    return c
+}
+
+// Routing: automatically becomes GET /users/:id
+func (c UserController) READ_BY_ID(ctx ginject.HTTPContext, param ginject.Param) map[string]any {
+    id := param.Get("id")
+    user := c.UserService.FindOne(id)
+    return map[string]any{"data": user}
+}
+
+// Routing: automatically becomes POST /users
+func (c UserController) CREATE(ctx ginject.HTTPContext, body ginject.Body) map[string]any {
+    // AuthGuard runs first and either allows or denies the request
+    var user User
+    body.Bind(&user)
+    created := c.UserService.Create(&user)
+    return map[string]any{"data": created}
+}
+```
+
+**Routing Convention**: Method names are parsed into HTTP routes:
+
+| Handler Name | HTTP Route |
+|---|---|
+| `READ` | `GET /` |
+| `READ_BY_ID` | `GET /:id` |
+| `CREATE` | `POST /` |
+| `UPDATE` | `PUT /` |
+| `MODIFY` | `PATCH /` |
+| `DELETE` | `DELETE /` |
+| `PREFLIGHT` | `OPTIONS /` |
+
+Path modifiers:
+- `BY` — path parameter: `READ_BY_ID_AND_ROLE` → `GET /:id/:role`
+- `AND` — additional segment: `READ_AND_ARCHIVED` → `GET /archived`
+- `OF` — sub-resource: `READ_OF_COMMENTS` → `GET /comments`
+- `VERSION_N` — API versioning: `READ_VERSION_2` → version 2 of that route
+
+### WebSocket
+
+**What it is**: WebSocket protocol for persistent, full-duplex communication over TCP.
+
+**When to use**:
+- Real-time notifications (chat, live updates, presence)
+- Collaborative features (live editing, multiplayer games)
+- Server-initiated messages to clients
+- Low-latency bidirectional streaming
+
+**Lifecycle**:
+
+```
+1. Client initiates WebSocket upgrade (HTTP Upgrade header)
+2. Framework runs handshake middlewares to authenticate/authorize connection
+3. Connection established, client assigned unique connection ID
+4. Client sends JSON event: { event: "message", data: {...} }
+5. Framework routes to matching handler based on event name
+6. Event flows through pipeline stages (guard → interceptor → handler → exception filter)
+7. Handler returns response data
+8. Framework serializes and sends back to client or broadcasts to others
+9. Connection closes (client disconnect or server closes)
+```
+
+**How it integrates with One Stage**:
+
+WebSocket handlers use the same pipeline as HTTP, but with event-based routing instead of method-based:
+
+```go
+type ChatController struct {
+    common.WS
+    MessageService MessageService
+}
+
+func (c ChatController) NewController() core.Controller {
+    c.BindGuard(AuthGuard{}, c.MESSAGE)  // Guard both HTTP and WS
+    return c
+}
+
+// Event name: "message"
+// Client sends: { event: "message", data: { text: "hello" } }
+func (c ChatController) MESSAGE(ctx ginject.WSContext, payload ginject.WSPayload) string {
+    text := payload.Get("text").(string)
+    msg := c.MessageService.Create(text)
+    return msg.ID  // Sent back to client
+}
+
+// Event name: "typing"
+// Client sends: { event: "typing", data: { isTyping: true } }
+func (c ChatController) TYPING(ctx ginject.WSContext, payload ginject.WSPayload) {
+    // Broadcast to others, no response to sender
+}
+```
+
+**Key differences from HTTP**:
+- Handshake happens once (via middleware), not per-request
+- No explicit HTTP status codes — exceptions become error events
+- Handlers can broadcast to multiple connections
+- Event names are lowercase method names
+
+---
+
+## Stages
+
+Every request (HTTP or WebSocket) flows through these five processing stages in order. Each stage can modify the request, short-circuit the pipeline, or transform the response.
+
+### 1. Middleware
+
+**Responsibility**: Early-stage request processing, logging, request enrichment, short-circuiting.
+
+**When it runs**: Before all other stages, runs for every request.
+
+**What it receives**: 
+- HTTP: `*http.Request`, `http.ResponseWriter`, continuation function `next()`
+- WebSocket: Initial HTTP upgrade request (handshake only)
+
+**What it can do**:
+- Log request details
+- Add headers/data to context
+- Validate/normalize request
+- Call `next()` to proceed to the next stage, or skip it to stop the pipeline
+
+**Available for**: Both HTTP and WebSocket
+
+**How it works**:
+
+```go
+type RequestLoggingMiddleware struct {
+    Logger common.Logger
+}
+
+func (m RequestLoggingMiddleware) Use(r *http.Request, w http.ResponseWriter, next ctx.Next) {
+    m.Logger.Info("request", "method", r.Method, "path", r.URL.Path)
+    next()  // Proceed to the next stage
+    m.Logger.Info("response_sent")
+}
+```
+
+**Scope**:
+- **Global middleware**: Runs for all requests
+- **Module middleware**: Runs for all requests in a module
+- **Per-handler middleware**: Runs only for specific handlers
+
+```go
+app.BindGlobalMiddlewares(RequestLoggingMiddleware{})
+
+controller.BindMiddleware(
+    RateLimitMiddleware{},
+    controller.CREATE,
+    controller.DELETE,  // Only for these handlers
+)
+```
+
+### 2. Guard
+
+**Responsibility**: Authorization and access control.
+
+**When it runs**: After middleware, before interceptors.
+
+**What it receives**: 
+- HTTP: `*ctx.HTTPContext` (request context, headers, params, etc.)
+- WebSocket: `*ctx.WSContext` (connection context, event data)
+
+**What it can do**:
+- Check authentication (JWT, session, API key)
+- Check authorization (roles, permissions)
+- Return `true` to allow (proceed to next stage)
+- Return `false` to deny (responds with 403 Forbidden for HTTP, sends error event for WebSocket)
+
+**Available for**: Both HTTP and WebSocket (Ginject inspects the signature)
+
+**How it works**:
+
+```go
+type AuthGuard struct {
+    ConfigService config.ConfigService
+}
+
+// HTTP version
+func (g AuthGuard) CanActivate(c *ctx.HTTPContext) bool {
+    token := c.Header().Get("Authorization")
+    return isValidToken(token)  // true = allow, false = deny
+}
+
+// WebSocket version (different signature)
+func (g AuthGuard) CanActivate(c *ctx.WSContext) bool {
+    token := c.WSPayload().Get("token")
+    return isValidToken(token)
+}
+```
+
+**Scope**:
+- **Global**: Protects all routes
+- **Per-controller**: Protects all handlers in a controller
+- **Per-handler**: Protects specific handlers only
+
+```go
+app.BindGlobalGuards(RateLimiterGuard{})
+
+controller.BindGuard(
+    AuthGuard{},
+    controller.CREATE,
+    controller.DELETE,  // Only these need authentication
+)
+```
+
+### 3. Interceptor
+
+**Responsibility**: Pre/post processing, response transformation, cross-cutting concerns.
+
+**When it runs**: 
+- Pre-processing: Before handler
+- Post-processing: After handler (via pipe)
+
+**What it receives**: `*ctx.HTTPContext` (or `*ctx.WSContext`), `*aggregation.Aggregation` object
+
+**What it can do**:
+- Perform pre-processing (e.g., parameter validation)
+- Wrap the handler execution
+- Transform the response
+- Handle side effects (caching, logging)
+
+**Available for**: Both HTTP and WebSocket
+
+**How it works** — Interceptors wrap handler execution:
+
+```go
+type ResponseTransformInterceptor struct{}
+
+func (i ResponseTransformInterceptor) Intercept(c *ctx.HTTPContext, agg *aggregation.Aggregation) any {
+    // Pre-process
+    
+    // Execute handler and post-process
+    return agg.Pipe(
+        agg.Consume(func(c *ctx.HTTPContext, data any) any {
+            // Post-process: wrap response
+            return ctx.Map{
+                "success": true,
+                "data": data,
+                "timestamp": time.Now(),
+            }
+        }),
+    )
+}
+```
+
+**Scope**: Global or per-controller (like middleware and guards).
+
+### 4. Handler
+
+**Responsibility**: Business logic, the main application handler.
+
+**When it runs**: After all pre-processing stages (middleware → guard → interceptor).
+
+**What it receives**: Parameters injected by type:
+- `*ctx.HTTPContext` — request context
+- `ctx.Body` — parsed JSON body
+- `ctx.Param` — path parameters (`:id`)
+- `ctx.Query` — query string (`?key=value`)
+- `ctx.Header` — HTTP headers
+- `ctx.Form` — form data
+- `ctx.File` — uploaded files
+- Providers (services, repositories) — injected automatically by type
+
+**What it can do**:
+- Execute business logic
+- Call services/providers
+- Return data (automatically serialized to JSON)
+- Throw exceptions (will be caught by exception filters)
+
+**Available for**: Both HTTP and WebSocket
+
+**How it works**:
+
+```go
+type UserController struct {
+    common.REST
+    UserService UserService  // Injected automatically
+}
+
+func (c UserController) READ_BY_ID(
+    ctx ginject.HTTPContext,
+    param ginject.Param,
+    body ginject.Body,
+) map[string]any {
+    id := param.Get("id")
+    
+    user := c.UserService.FindOne(id)
+    if user == nil {
+        panic(exception.NotFoundException("user not found"))
+    }
+    
+    return map[string]any{"data": user}
+}
+```
+
+### 5. Exception Filter
+
+**Responsibility**: Error handling, converting exceptions to responses.
+
+**When it runs**: When a panic occurs anywhere in the pipeline.
+
+**What it receives**: 
+- `*ctx.HTTPContext` (or `*ctx.WSContext`)
+- `*exception.Exception` (the error)
+
+**What it can do**:
+- Log the error
+- Convert to HTTP status code + JSON response (HTTP)
+- Send error event to client (WebSocket)
+- Custom error formatting
+
+**Available for**: Both HTTP and WebSocket
+
+**How it works**:
+
+```go
+type AppExceptionFilter struct{}
+
+func (f AppExceptionFilter) Catch(c *ctx.HTTPContext, ex *exception.Exception) {
+    statusCode, _ := ex.GetHTTPStatus()
+    c.Status(statusCode).JSON(ctx.Map{
+        "code": ex.GetCode(),
+        "error": ex.Error(),
+        "message": ex.GetResponse(),
+    })
+}
+```
+
+**Built-in exceptions**:
+
+Throw from anywhere:
+
+```go
+panic(exception.NotFoundException("user not found"))
+panic(exception.BadRequestException("invalid email"))
+panic(exception.UnauthorizedException("invalid token"))
+panic(exception.InternalServerErrorException("database error"))
+```
+
+**Scope**: Global or per-controller.
+
+---
+
+## Complete Pipeline Example
+
+Here's how all stages work together:
+
+```go
+type UserController struct {
+    common.REST
+    UserService UserService
+}
+
+func (c UserController) NewController() core.Controller {
+    // Per-controller guard and middleware
+    c.BindGuard(AuthGuard{}, c.CREATE, c.DELETE)
+    c.BindMiddleware(RequestLogMiddleware{}, c.CREATE)
+    return c
+}
+
+// Route: GET /users/:id
+func (c UserController) READ_BY_ID(
+    ctx ginject.HTTPContext,
+    param ginject.Param,
+) any {
+    id := param.Get("id")
+    user := c.UserService.FindOne(id)
+    if user == nil {
+        panic(exception.NotFoundException("user not found"))
+    }
+    return user
+}
+
+// Route: POST /users (requires auth)
+func (c UserController) CREATE(
+    ctx ginject.HTTPContext,
+    body ginject.Body,
+) any {
+    // At this point:
+    // 1. GlobalMiddlewares have run
+    // 2. ModuleMiddlewares have run
+    // 3. RequestLogMiddleware (per-handler) has logged the request
+    // 4. AuthGuard has verified the token
+    // 5. Interceptors (pre) have prepared the request
+    // 6. Handler is now executing
+    
+    var user User
+    body.Bind(&user)
+    created := c.UserService.Create(&user)
+    
+    return created
+    // After handler returns:
+    // 7. Interceptors (post) transform the response
+    // 8. Response is sent to client
+    // If panic occurred: ExceptionFilter would catch it and send error response
+}
+```
+
+**Pipeline flow for `POST /users`** (with AuthGuard):
+
+```
+Request arrives
+  ↓
+GlobalMiddlewares → logged
+  ↓
+ModuleMiddlewares → processed
+  ↓
+RequestLogMiddleware (per-handler) → logged
+  ↓
+AuthGuard (per-handler) → Authorization header checked, allowed
+  ↓
+Interceptors (pre)
+  ↓
+CREATE handler executes → returns User
+  ↓
+Interceptors (post/pipe) → wraps response
+  ↓
+Response sent (200 OK with JSON)
+
+If panic at any step:
+  ↓
+ExceptionFilter catches → sends error response (4xx/5xx)
+```
+
+---
+
+## Core Concepts Reference
 
 | Concept | Description |
 |---|---|
 | **Module** | Unit of organization. Groups controllers and providers. Can be imported by other modules. |
 | **Controller** | Handles HTTP or WebSocket routes. Embeds `common.REST` or `common.WS`. |
 | **Provider** | Injectable service. Any struct implementing `NewProvider() core.Provider`. |
-| **ExecutionContext** | Request-scoped `context.Context` with metadata. Passed through the entire pipeline. |
+| **HTTPContext** | Request-scoped context with request/response data. Available only in HTTP handlers. |
+| **WSContext** | Connection-scoped context for WebSocket. Available only in WebSocket handlers. |
 | **Middleware** | Runs before guards, can short-circuit the pipeline. |
 | **Guard** | Decides whether a request is authorized to proceed. |
-| **Interceptor** | Wraps the handler — pre/post processing, response transformation via aggregation. |
-| **ExceptionFilter** | Catches errors and translates them to HTTP responses. |
+| **Interceptor** | Wraps the handler — pre/post processing, response transformation. |
+| **ExceptionFilter** | Catches panics and translates them to HTTP/WebSocket responses. |
+| **Pipe/DTO** | Transforms and validates handler parameters before injection. |
 
 ## Quick Overview
 
@@ -42,18 +565,6 @@ func main() {
 }
 ```
 
-## Request Pipeline
-
-Every HTTP request flows through this deterministic pipeline:
-
-```
-GlobalMiddlewares → ModuleMiddlewares → Guards → Interceptors → Handler → Aggregation → Response
-                                                                                    ↑
-                                                                          ExceptionFilters (on error)
-```
-
-Each layer is composable and can be bound globally, per-module, or per-route.
-
 ## Module Graph
 
 ```go
@@ -61,8 +572,8 @@ Each layer is composable and can be bound globally, per-module, or per-route.
 //   ├── ConfigModule   (global, .env loader)
 //   ├── CacheModule    (global, LFU in-memory cache)
 //   └── UserModule
-//         ├── UserController  (REST: /users)
-//         └── UserService     (provider)
+//         ├── UserController (REST: /users)
+//         └── UserService    (provider)
 ```
 
 Providers declared in a module are available only within that module unless exported or the module is marked `IsGlobal: true`.

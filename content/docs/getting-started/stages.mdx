@@ -1,0 +1,603 @@
+---
+title: Pipeline Stages
+description: Understand each stage of the Ginject request pipeline — Middleware, Guard, Interceptor, Handler, Exception Filter.
+---
+
+# Pipeline Stages
+
+Every request (HTTP or WebSocket) flows through these five stages in order. Each stage has a specific responsibility and can interact with the request at different points in its lifecycle.
+
+## Overview
+
+```
+Request arrives
+  ↓
+Middleware (request enrichment)
+  ↓
+Guard (authorization check)
+  ↓
+Interceptor (pre-processing)
+  ↓
+Handler (business logic)
+  ↓
+Interceptor (post-processing / response transformation)
+  ↓
+Response sent to client
+
+If panic at any stage:
+  ↓
+Exception Filter (error handling)
+```
+
+---
+
+## 1. Middleware
+
+### Purpose
+
+Middleware is for **early-stage request processing**. Log requests, add data to context, validate basics, short-circuit the pipeline if needed.
+
+### Execution Time
+
+- Runs **first**, before all other stages
+- Runs for **every request** (if not short-circuited)
+
+### What It Receives
+
+```go
+// HTTP middleware
+func (m Middleware) Use(r *http.Request, w http.ResponseWriter, next ctx.Next)
+
+// WebSocket middleware (runs during handshake)
+func (m Middleware) Use(r *http.Request, w http.ResponseWriter, next ctx.Next)
+```
+
+- Standard library HTTP request/response
+- `next()` function to proceed to next stage
+
+### What It Can Do
+
+- Log request details (method, path, headers)
+- Validate request format
+- Add headers to response
+- Add data to context (available to downstream stages)
+- Call `next()` to proceed
+- **Don't call `next()`** to short-circuit and stop the pipeline
+
+### Available For
+
+- HTTP: ✅ Yes
+- WebSocket: ✅ Yes (runs during handshake, before connection accepted)
+
+### Scope
+
+- **Global**: `app.BindGlobalMiddlewares(m)`
+- **Module**: `module.BindMiddleware(m)`
+- **Per-handler**: `controller.BindMiddleware(m, controller.CREATE)`
+
+### Example
+
+```go
+type RequestLoggingMiddleware struct {
+    Logger common.Logger
+}
+
+func (m RequestLoggingMiddleware) Use(r *http.Request, w http.ResponseWriter, next ctx.Next) {
+    start := time.Now()
+    m.Logger.Info("request", "method", r.Method, "path", r.URL.Path)
+    
+    next()  // Proceed to guards
+    
+    m.Logger.Info("request_complete", "duration_ms", time.Since(start).Milliseconds())
+}
+
+// Usage
+app.BindGlobalMiddlewares(RequestLoggingMiddleware{Logger: logger})
+```
+
+### Use Cases
+
+- Request logging and metrics
+- CORS headers
+- Helmet (security headers)
+- Request ID generation
+- Rate limiting setup
+- Body parsing configuration
+
+---
+
+## 2. Guard
+
+### Purpose
+
+Guard is for **authorization and access control**. Check if the user/connection is allowed to proceed.
+
+### Execution Time
+
+- Runs **after middleware**, before interceptors
+- Runs for **every request** (unless middleware short-circuited)
+
+### What It Receives
+
+```go
+// HTTP guard
+func (g Guard) CanActivate(c *ctx.HTTPContext) bool
+
+// WebSocket guard
+func (g Guard) CanActivate(c *ctx.WSContext) bool
+```
+
+- Request context with headers, params, body, etc.
+
+### What It Can Do
+
+- Check authentication (JWT, session, API key)
+- Check authorization (roles, permissions)
+- Return `true` → allow, proceed to next stage
+- Return `false` → deny, return 403 Forbidden (HTTP) or error event (WebSocket)
+
+### Available For
+
+- HTTP: ✅ Yes
+- WebSocket: ✅ Yes (Ginject inspects signature to route correctly)
+
+### Scope
+
+- **Global**: `app.BindGlobalGuards(g)`
+- **Module**: `module.BindGuard(g)`
+- **Per-handler**: `controller.BindGuard(g, controller.CREATE)`
+
+### Example
+
+```go
+type AuthGuard struct {
+    ConfigService config.ConfigService
+}
+
+// HTTP version
+func (g AuthGuard) CanActivate(c *ctx.HTTPContext) bool {
+    token := c.Header().Get("Authorization")
+    return isValidJWT(token)
+}
+
+// WebSocket version (same guard, different signature)
+func (g AuthGuard) CanActivate(c *ctx.WSContext) bool {
+    token := c.WSPayload().Get("token")
+    return isValidJWT(token)
+}
+
+func isValidJWT(token string) bool {
+    // Your auth logic
+    return token != "" && validSecret(token)
+}
+
+// Usage in HTTP controller
+type UserController struct {
+    common.REST
+}
+
+func (c UserController) NewController() core.Controller {
+    c.BindGuard(AuthGuard{}, c.CREATE, c.DELETE)  // Protect these handlers
+    return c
+}
+
+func (c UserController) READ() []User { /* ... */ }                    // No guard
+func (c UserController) CREATE(body ginject.Body) User { /* ... */ }  // Guard required
+
+// Usage in WebSocket controller (same guard!)
+type ChatController struct {
+    common.WS
+}
+
+func (c ChatController) NewController() core.Controller {
+    c.BindGuard(AuthGuard{}, c.MESSAGE)  // Same auth guard
+    return c
+}
+
+func (c ChatController) MESSAGE(payload ginject.WSPayload) string { /* ... */ }
+```
+
+### Use Cases
+
+- JWT token validation
+- Session authentication
+- Role-based access control (RBAC)
+- API key validation
+- Rate limiting (reject if over limit)
+- Custom authorization rules
+
+---
+
+## 3. Interceptor
+
+### Purpose
+
+Interceptor is for **pre/post processing and response transformation**. Wrap handler execution, modify requests before, transform responses after.
+
+### Execution Time
+
+- **Pre-processing**: Before handler
+- **Post-processing**: After handler (via `Pipe`)
+
+### What It Receives
+
+```go
+// HTTP interceptor
+func (i Interceptor) Intercept(c *ctx.HTTPContext, agg *aggregation.Aggregation) any
+
+// WebSocket interceptor
+func (i Interceptor) Intercept(c *ctx.WSContext, agg *aggregation.Aggregation) any
+```
+
+- Request context
+- Aggregation object (executes handler and post-processes)
+
+### What It Can Do
+
+- Pre-process request (validate, enrich, etc.)
+- Execute handler via `agg.Pipe()`
+- Post-process response (transform, wrap, filter)
+- Short-circuit and return custom response (without calling handler)
+
+### Available For
+
+- HTTP: ✅ Yes
+- WebSocket: ✅ Yes
+
+### Scope
+
+- **Global**: `app.BindGlobalInterceptors(i)`
+- **Module**: `module.BindInterceptor(i)`
+- **Per-handler**: `controller.BindInterceptor(i, controller.READ)`
+
+### Example
+
+```go
+type ResponseWrapperInterceptor struct {
+    Logger common.Logger
+}
+
+func (i ResponseWrapperInterceptor) Intercept(c *ctx.HTTPContext, agg *aggregation.Aggregation) any {
+    // Pre-processing (before handler)
+    i.Logger.Info("interceptor_pre", "path", c.URL.Path)
+    
+    // Execute handler and post-process response
+    return agg.Pipe(
+        agg.Consume(func(c *ctx.HTTPContext, data any) any {
+            // Post-processing (after handler)
+            i.Logger.Info("interceptor_post", "data_type", fmt.Sprintf("%T", data))
+            
+            // Wrap response
+            return ctx.Map{
+                "success": true,
+                "data": data,
+                "timestamp": time.Now().Unix(),
+            }
+        }),
+    )
+}
+
+// Usage
+app.BindGlobalInterceptors(ResponseWrapperInterceptor{Logger: logger})
+```
+
+### More Complex Example: Caching
+
+```go
+type CachingInterceptor struct {
+    CacheService cache.CacheService
+}
+
+func (i CachingInterceptor) Intercept(c *ctx.HTTPContext, agg *aggregation.Aggregation) any {
+    // Check cache before executing handler
+    cacheKey := c.URL.Path + "?" + c.URL.RawQuery
+    
+    if cached, ok := i.CacheService.Get(context.Background(), cacheKey); ok {
+        // Return cached response without executing handler
+        return cached
+    }
+    
+    // Execute handler
+    return agg.Pipe(
+        agg.Consume(func(c *ctx.HTTPContext, data any) any {
+            // Cache the response
+            i.CacheService.Set(context.Background(), cacheKey, data, 5*time.Minute)
+            return data
+        }),
+    )
+}
+```
+
+### Use Cases
+
+- Request/response logging
+- Response transformation (wrap in envelope)
+- Caching (check before, cache after)
+- Request enrichment (add computed data)
+- Timeout handling
+- Performance metrics
+
+---
+
+## 4. Handler
+
+### Purpose
+
+Handler is where **business logic executes**. Fetch data, process, return result.
+
+### Execution Time
+
+- Runs **after** middleware, guard, interceptor (pre)
+- Runs **before** interceptor (post)
+
+### What It Receives
+
+```go
+func (c Controller) READ_BY_ID(
+    ctx ginject.HTTPContext,     // Request context
+    param ginject.Param,         // Path parameters
+    body ginject.Body,           // JSON body (if POST/PUT/PATCH)
+    query ginject.Query,         // Query string
+    header ginject.Header,       // Headers
+    form ginject.Form,           // Form data
+    file ginject.File,           // Uploaded files
+    SomeService SomeService,     // Injected service (by type)
+) any {
+    // All parameters injected automatically
+}
+```
+
+### What It Can Do
+
+- Access request data (body, params, query, headers, files)
+- Call services and providers (dependency injection by type)
+- Execute business logic
+- Return response data (automatically serialized)
+- Panic with exception (caught by exception filter)
+
+### Available For
+
+- HTTP: ✅ Yes
+- WebSocket: ✅ Yes
+
+### Parameters Injected By Type
+
+**HTTP handlers**:
+- `*ctx.HTTPContext` — request context
+- `ctx.Body` — JSON body
+- `ctx.Param` — path parameters
+- `ctx.Query` — query string
+- `ctx.Header` — HTTP headers
+- `ctx.Form` — form data
+- `ctx.File` — uploaded files
+- Any `Provider` (service, repository) — by struct type
+
+**WebSocket handlers**:
+- `*ctx.WSContext` — connection context
+- `ctx.WSPayload` — event data
+- Any `Provider` (service, repository) — by struct type
+
+### Example
+
+```go
+type UserController struct {
+    common.REST
+    UserService UserService      // Injected automatically
+    CacheService cache.CacheService
+}
+
+// GET /users/:id
+func (c UserController) READ_BY_ID(
+    ctx ginject.HTTPContext,
+    param ginject.Param,
+) User {
+    id := param.Get("id")
+    
+    // Call service
+    user := c.UserService.FindOne(id)
+    
+    if user == nil {
+        panic(exception.NotFoundException("user not found"))
+    }
+    
+    return user
+}
+
+// POST /users
+func (c UserController) CREATE(
+    ctx ginject.HTTPContext,
+    body ginject.Body,
+) User {
+    var user User
+    body.Bind(&user)
+    
+    // Validate
+    if user.Name == "" {
+        panic(exception.BadRequestException("name is required"))
+    }
+    
+    // Create
+    created := c.UserService.Create(&user)
+    
+    // Cache
+    c.CacheService.Set(context.Background(), "user:"+created.ID, created, 5*time.Minute)
+    
+    return created
+}
+```
+
+### Use Cases
+
+- Fetch data from database
+- Create, update, delete records
+- Call external APIs
+- Compute results
+- Validate input
+- Throw exceptions on error
+
+---
+
+## 5. Exception Filter
+
+### Purpose
+
+Exception filter catches panics and converts them to appropriate responses.
+
+### Execution Time
+
+- Runs **when a panic occurs** at any stage
+- Catches panics from middleware, guard, interceptor, handler
+
+### What It Receives
+
+```go
+// HTTP exception filter
+func (f Filter) Catch(c *ctx.HTTPContext, ex *exception.Exception)
+
+// WebSocket exception filter
+func (f Filter) Catch(c *ctx.WSContext, ex *exception.Exception)
+```
+
+- Request context
+- Exception object with code, message, HTTP status, etc.
+
+### What It Can Do
+
+- Log the error
+- Convert exception to HTTP response (with status code and JSON)
+- Convert exception to WebSocket error event
+- Custom error formatting
+- Suppress error (don't respond) if needed
+
+### Available For
+
+- HTTP: ✅ Yes
+- WebSocket: ✅ Yes
+
+### Scope
+
+- **Global**: `app.BindGlobalExceptionFilters(f)`
+- **Module**: `module.BindExceptionFilter(f)`
+- **Per-handler**: `controller.BindExceptionFilter(f, controller.CREATE)`
+
+### Example
+
+```go
+type AppExceptionFilter struct {
+    Logger common.Logger
+}
+
+// HTTP version
+func (f AppExceptionFilter) Catch(c *ctx.HTTPContext, ex *exception.Exception) {
+    statusCode, _ := ex.GetHTTPStatus()
+    
+    f.Logger.Error("exception", "code", statusCode, "error", ex.Error())
+    
+    c.Status(statusCode).JSON(ctx.Map{
+        "code": ex.GetCode(),
+        "error": ex.Error(),
+        "message": ex.GetResponse(),
+    })
+}
+
+// WebSocket version
+func (f AppExceptionFilter) Catch(c *ctx.WSContext, ex *exception.Exception) {
+    f.Logger.Error("exception", "error", ex.Error())
+    
+    // Send error event to client
+    c.SendJSON(ctx.Map{
+        "type": "error",
+        "code": ex.GetCode(),
+        "message": ex.GetResponse(),
+    })
+}
+
+// Usage
+app.BindGlobalExceptionFilters(AppExceptionFilter{Logger: logger})
+```
+
+### Built-in Exceptions
+
+Throw anywhere in the pipeline:
+
+```go
+panic(exception.BadRequestException("invalid input"))           // 400
+panic(exception.UnauthorizedException("invalid token"))        // 401
+panic(exception.ForbiddenException("access denied"))           // 403
+panic(exception.NotFoundException("resource not found"))       // 404
+panic(exception.ConflictException("duplicate"))                // 409
+panic(exception.InternalServerErrorException("db error"))      // 500
+```
+
+### Use Cases
+
+- Log errors for monitoring
+- Convert exceptions to consistent response format
+- Add error IDs for debugging
+- Custom error messages
+- Rate limiting responses
+
+---
+
+## Complete Request Flow Example
+
+Here's how all stages work together:
+
+```go
+// Setup
+type UserController struct {
+    common.REST
+    UserService UserService
+}
+
+func (c UserController) NewController() core.Controller {
+    c.BindMiddleware(RequestLogMiddleware{})
+    c.BindGuard(AuthGuard{}, c.CREATE, c.DELETE)
+    return c
+}
+
+func (c UserController) CREATE(
+    body ginject.Body,
+) User {
+    var user User
+    body.Bind(&user)
+    return c.UserService.Create(&user)
+}
+
+// Request: POST /users
+// Body: { "name": "Alice" }
+// Headers: Authorization: Bearer valid-token
+
+// Execution:
+// 1. Middleware.Use() → logs "POST /users"
+// 2. Guard.CanActivate() → checks token, returns true
+// 3. Interceptor.Intercept() (pre) → pre-processing
+// 4. CREATE() → creates user, returns User{ID: "123", Name: "Alice"}
+// 5. Interceptor.Intercept() (post) → wraps: {success: true, data: {ID: "123", ...}}
+// 6. Response sent: 201 Created, body: {success: true, data: {...}}
+
+// If token invalid:
+// 1. Middleware.Use() → logs "POST /users"
+// 2. Guard.CanActivate() → returns false
+// 3. Response sent: 403 Forbidden (handler never runs)
+
+// If user.name is empty and handler panics:
+// 1-3. Same as above
+// 4. CREATE() → panics with BadRequestException
+// 5. ExceptionFilter.Catch() → logs error, converts to response
+// 6. Response sent: 400 Bad Request, body: {code: 400, error: "...", message: "..."}
+```
+
+---
+
+## Summary
+
+| Stage | Purpose | When to Use |
+|---|---|---|
+| Middleware | Early processing, logging | Logging, CORS, request enrichment |
+| Guard | Authorization | Auth validation, role checks |
+| Interceptor | Pre/post processing | Response wrapping, caching |
+| Handler | Business logic | All application logic |
+| Exception Filter | Error handling | Error formatting, logging |
+
+Learn these five stages deeply — they apply to every transport Ginject supports.

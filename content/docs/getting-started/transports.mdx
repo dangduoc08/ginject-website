@@ -1,0 +1,395 @@
+---
+title: Transports
+description: Ginject supports multiple transports — HTTP for REST APIs and WebSocket for real-time communication. Both use the same processing stages.
+---
+
+# Transports
+
+Ginject supports multiple transports, each with its own communication pattern but all sharing the same processing stages (middleware, guard, interceptor, handler, exception filter).
+
+## HTTP
+
+HTTP is the standard request-response protocol for building REST APIs.
+
+### When to Use HTTP
+
+- Public APIs consumed by web/mobile clients
+- Stateless request-response patterns
+- REST/CRUD operations
+- APIs behind CDNs or load balancers
+- Standard API versioning needs
+
+### How HTTP Requests Flow
+
+```
+1. Client sends HTTP request (GET /users/123)
+2. Framework matches to handler by method + path
+3. Request flows through stages:
+   - Middleware: logging, CORS, etc.
+   - Guard: authentication, authorization
+   - Interceptor: pre-processing
+   - Handler: business logic
+   - Response: serialized to JSON
+   - Interceptor: post-processing
+4. HTTP response sent (200, 404, 500, etc.)
+5. Exception filter catches panics → error response
+```
+
+### HTTP Controller Structure
+
+```go
+type UserController struct {
+    common.REST        // Indicates this is an HTTP controller
+    UserService UserService  // Dependency injection
+}
+
+func (c UserController) NewController() core.Controller {
+    // Bind guards and middleware for this controller
+    c.BindGuard(AuthGuard{}, c.CREATE, c.DELETE)
+    c.BindMiddleware(RequestLogMiddleware{})
+    return c
+}
+
+// Route: GET /users
+func (c UserController) READ() []User {
+    return c.UserService.FindAll()
+}
+
+// Route: GET /users/:id
+func (c UserController) READ_BY_ID(param ginject.Param) User {
+    id := param.Get("id")
+    return c.UserService.FindOne(id)
+}
+
+// Route: POST /users (protected by guard)
+func (c UserController) CREATE(body ginject.Body) User {
+    var user User
+    body.Bind(&user)
+    return c.UserService.Create(&user)
+}
+
+// Route: PUT /users/:id (protected by guard)
+func (c UserController) UPDATE(param ginject.Param, body ginject.Body) User {
+    id := param.Get("id")
+    var updates User
+    body.Bind(&updates)
+    return c.UserService.Update(id, updates)
+}
+
+// Route: PATCH /users/:id (protected by guard)
+func (c UserController) MODIFY(param ginject.Param, body ginject.Body) User {
+    id := param.Get("id")
+    var updates User
+    body.Bind(&updates)
+    return c.UserService.Patch(id, updates)
+}
+
+// Route: DELETE /users/:id (protected by guard)
+func (c UserController) DELETE(param ginject.Param) map[string]any {
+    id := param.Get("id")
+    c.UserService.Delete(id)
+    return map[string]any{"deleted": true}
+}
+```
+
+### Routing Convention
+
+HTTP method tokens:
+
+| Token | HTTP Method | Use Case |
+|---|---|---|
+| `READ` | GET | Retrieve resource(s) |
+| `CREATE` | POST | Create new resource |
+| `UPDATE` | PUT | Replace entire resource |
+| `MODIFY` | PATCH | Partial update |
+| `DELETE` | DELETE | Remove resource |
+| `PREFLIGHT` | OPTIONS | CORS preflight |
+
+Path tokens:
+
+| Token | Meaning | Example |
+|---|---|---|
+| `BY` | Path parameter | `READ_BY_ID` → `GET /:id` |
+| `AND` | Additional segment | `READ_AND_PROFILE` → `GET /profile` |
+| `OF` | Sub-resource | `READ_OF_COMMENTS` → `GET /comments` |
+| `ANY` | Wildcard `*` | `READ_ANY` → `GET /*` |
+| `FILE` | File extension | `READ_ANY_FILE_HTML` → `GET /*.html` |
+| `VERSION_N` | API version | `READ_VERSION_2` → GET / (version 2) |
+
+Examples:
+
+```go
+func (c *UserController) READ() []User                    // GET /
+func (c *UserController) READ_BY_ID() User                // GET /:id
+func (c *UserController) READ_BY_ID_AND_PROFILE() any     // GET /:id/profile
+func (c *UserController) CREATE() User                    // POST /
+func (c *UserController) UPDATE_BY_ID() User              // PUT /:id
+func (c *UserController) MODIFY_BY_ID() User              // PATCH /:id
+func (c *UserController) DELETE_BY_ID() any               // DELETE /:id
+func (c *UserController) READ_VERSION_1() []User          // GET / (v1)
+func (c *UserController) READ_VERSION_2() []User          // GET / (v2)
+```
+
+### Handler Parameter Injection
+
+HTTP handlers receive parameters by type declaration:
+
+```go
+func (c UserController) CREATE(
+    ctx ginject.HTTPContext,    // *ctx.HTTPContext - request context
+    body ginject.Body,          // Parsed JSON body
+    query ginject.Query,        // Query string: ?skip=10&limit=20
+    param ginject.Param,        // Path parameters: /users/:id/:role
+    header ginject.Header,      // HTTP headers
+    form ginject.Form,          // Form data (multipart)
+    file ginject.File,          // Uploaded files
+) User {
+    // All parameters are automatically injected and available
+}
+```
+
+### Status Codes and Response Format
+
+Responses are automatically serialized:
+
+```go
+func (c UserController) READ() User {
+    // Returns: 200 OK with JSON body
+}
+
+func (c UserController) CREATE() User {
+    // Returns: 201 Created with JSON body (automatic for POST)
+}
+
+func (c UserController) DELETE() {
+    // Returns: 200 OK (no body)
+}
+
+// Manual status code
+func (c UserController) CREATE(res ginject.Response) User {
+    res.Status(201)  // Custom status
+    return user
+}
+
+// Exception throws error response
+func (c UserController) READ_BY_ID(param ginject.Param) User {
+    user := c.UserService.FindOne(param.Get("id"))
+    if user == nil {
+        panic(exception.NotFoundException("user not found"))
+        // Returns: 404 Not Found with error JSON
+    }
+    return user
+}
+```
+
+---
+
+## WebSocket
+
+WebSocket provides persistent, full-duplex bidirectional communication over a single TCP connection.
+
+### When to Use WebSocket
+
+- Real-time notifications (push notifications, live updates)
+- Chat and messaging applications
+- Collaborative features (live editing, shared whiteboards)
+- Server-initiated messages to clients
+- Low-latency bidirectional streaming
+- Presence and activity indicators
+
+### How WebSocket Requests Flow
+
+```
+1. Client initiates WebSocket upgrade (HTTP Upgrade header)
+2. Framework runs handshake middleware (authentication, CORS, etc.)
+3. Connection established, client assigned unique ID
+4. Ping loop starts (keep-alive, server → client every 30s)
+5. Client sends JSON: { event: "message", data: {...} }
+6. Framework routes by event name to matching handler
+7. Request flows through stages:
+   - Guard: authorization for this event
+   - Interceptor: pre-processing
+   - Handler: business logic
+   - Interceptor: post-processing
+   - Response: serialized and sent back to client
+8. Connection stays open, waiting for next event
+9. ExceptionFilter catches panics → error event sent to client
+10. Client disconnects → connection closed
+```
+
+### WebSocket Controller Structure
+
+```go
+type ChatController struct {
+    common.WS  // Indicates this is a WebSocket controller
+    MessageService MessageService
+}
+
+func (c ChatController) NewController() core.Controller {
+    c.BindGuard(AuthGuard{})  // Runs on connection handshake
+    c.BindGuard(RoleGuard{}, c.DELETE_MESSAGE)  // Per-event guard
+    return c
+}
+
+// Event: "message"
+// Client sends: { event: "message", data: { text: "hello" } }
+func (c ChatController) MESSAGE(ctx ginject.WSContext, payload ginject.WSPayload) map[string]any {
+    text := payload.Get("text").(string)
+    msg := c.MessageService.Create(text)
+    return map[string]any{"id": msg.ID, "text": msg.Text}
+    // Response sent back to sender
+}
+
+// Event: "typing"
+// Client sends: { event: "typing", data: { isTyping: true } }
+func (c ChatController) TYPING(ctx ginject.WSContext, payload ginject.WSPayload) {
+    isTyping := payload.Get("isTyping").(bool)
+    // No return value — broadcast to others instead
+    c.Publisher.Publish("typing_update", isTyping)
+}
+
+// Event: "delete_message"
+// Client sends: { event: "delete_message", data: { id: "123" } }
+func (c ChatController) DELETE_MESSAGE(payload ginject.WSPayload) {
+    // Guarded by RoleGuard — only admins can delete
+    id := payload.Get("id").(string)
+    c.MessageService.Delete(id)
+}
+```
+
+### Event Routing Convention
+
+WebSocket methods map to event names (lowercase):
+
+```go
+func (c ChatController) MESSAGE(payload ginject.WSPayload) any
+// Event name: "message"
+// Client sends: { "event": "message", "data": {...} }
+
+func (c ChatController) TYPING(payload ginject.WSPayload) any
+// Event name: "typing"
+// Client sends: { "event": "typing", "data": {...} }
+
+func (c ChatController) DELETE_MESSAGE(payload ginject.WSPayload) any
+// Event name: "delete_message"
+// Client sends: { "event": "delete_message", "data": {...} }
+
+func (c ChatController) NOTIFICATION(payload ginject.WSPayload) any
+// Event name: "notification"
+// Client sends: { "event": "notification", "data": {...} }
+```
+
+### WebSocket Handler Parameter Injection
+
+WebSocket handlers receive:
+
+```go
+func (c ChatController) MESSAGE(
+    ctx ginject.WSContext,        // *ctx.WSContext - connection context
+    payload ginject.WSPayload,    // Event data from client
+) any {
+    // Injected automatically
+}
+```
+
+**Note**: HTTP-specific types (Body, Query, Header, etc.) are NOT available in WebSocket handlers.
+
+### Client Example
+
+```javascript
+// Connect to WebSocket server
+const ws = new WebSocket('ws://localhost:3000/ws');
+
+ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    
+    if (msg.type === 'connected') {
+        console.log('Connected, ID:', msg.id);
+    }
+};
+
+// Send message event
+ws.send(JSON.stringify({
+    event: 'message',
+    data: {
+        text: 'Hello, world!'
+    }
+}));
+
+// Server receives and handler MESSAGE() executes
+// Response sent back to client
+ws.onmessage = (event) => {
+    const response = JSON.parse(event.data);
+    console.log('Response:', response);
+};
+
+// Send typing event
+ws.send(JSON.stringify({
+    event: 'typing',
+    data: {
+        isTyping: true
+    }
+}));
+
+// Handle errors
+ws.onerror = (error) => {
+    console.error('WebSocket error:', error);
+};
+
+// Handle disconnect
+ws.onclose = () => {
+    console.log('Disconnected');
+};
+```
+
+### Broadcasting to Multiple Connections
+
+WebSocket handlers can broadcast to all connected clients:
+
+```go
+type ChatController struct {
+    common.WS
+    Publisher common.Publisher  // Injected by framework
+}
+
+func (c ChatController) MESSAGE(payload ginject.WSPayload) map[string]any {
+    text := payload.Get("text").(string)
+    
+    // Send to all subscribers
+    c.Publisher.Publish("chat_message", map[string]any{
+        "text": text,
+        "timestamp": time.Now(),
+    })
+    
+    return map[string]any{"status": "sent"}
+}
+```
+
+### Differences from HTTP
+
+| Aspect | HTTP | WebSocket |
+|---|---|---|
+| Connection lifetime | Per-request | Per-connection |
+| Routing | By method + path | By event name |
+| Status codes | Yes (200, 404, 500) | No (events only) |
+| Headers | Request/response headers | None (persistent connection) |
+| Handshake | None | HTTP upgrade → WS connection |
+| Broadcasting | Not applicable | Yes, publish to all |
+| Parameter types | Body, Query, Param, Header | Payload only |
+
+---
+
+## Summary
+
+Both HTTP and WebSocket use the same pipeline stages:
+
+```
+Middleware → Guard → Interceptor → Handler → Exception Filter
+```
+
+Choose based on your use case:
+
+- **HTTP**: REST APIs, stateless, standard web APIs
+- **WebSocket**: Real-time, stateful, bidirectional streaming
+
+Build once with the unified stage model, deploy both.

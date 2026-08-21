@@ -3,39 +3,27 @@
 import { motion } from 'framer-motion';
 import { useTranslations } from 'next-intl';
 import {
-  Boxes,
-  Timer,
-  ShieldCheck,
-  Wifi,
+  Zap,
+  Lock,
+  Network,
+  RotateCcw,
   Layers,
-  Database,
+  Shield,
 } from 'lucide-react';
 
-const icons = [Boxes, Timer, ShieldCheck, Wifi, Layers, Database];
-const featureKeys = ['di', 'exec', 'goroutine', 'ws', 'middleware', 'cache'] as const;
-
-const gradients = [
-  'from-blue-500/20 to-blue-600/20 group-hover:from-blue-500/30 group-hover:to-blue-600/30',
-  'from-violet-500/20 to-violet-600/20 group-hover:from-violet-500/30 group-hover:to-violet-600/30',
-  'from-green-500/20 to-green-600/20 group-hover:from-green-500/30 group-hover:to-green-600/30',
-  'from-cyan-500/20 to-cyan-600/20 group-hover:from-cyan-500/30 group-hover:to-cyan-600/30',
-  'from-orange-500/20 to-orange-600/20 group-hover:from-orange-500/30 group-hover:to-orange-600/30',
-  'from-pink-500/20 to-pink-600/20 group-hover:from-pink-500/30 group-hover:to-pink-600/30',
-];
-
-const iconColors = [
-  'text-blue-500',
-  'text-violet-500',
-  'text-green-500',
-  'text-cyan-500',
-  'text-orange-500',
-  'text-pink-500',
+const iconComponents = [
+  { Icon: Zap, label: 'Dependency Injection', color: 'text-yellow-500' },
+  { Icon: Shield, label: 'Execution Safety', color: 'text-green-500' },
+  { Icon: Network, label: 'Multi-Transport', color: 'text-cyan-500' },
+  { Icon: Lock, label: 'Type-Safe', color: 'text-violet-500' },
+  { Icon: Layers, label: 'Middleware Stack', color: 'text-orange-500' },
+  { Icon: RotateCcw, label: 'Composable', color: 'text-pink-500' },
 ];
 
 const containerVariants = {
   hidden: {},
   visible: {
-    transition: { staggerChildren: 0.08 },
+    transition: { staggerChildren: 0.1 },
   },
 };
 
@@ -48,52 +36,58 @@ export function Features() {
   const t = useTranslations('features');
 
   return (
-    <section className="py-24 px-4">
+    <section className="py-32 px-4 bg-gradient-to-b from-transparent via-fd-card/30 to-transparent">
       <div className="mx-auto max-w-7xl">
-        {/* Section heading */}
+        {/* Section header */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
           transition={{ duration: 0.5 }}
-          className="text-center mb-16"
+          className="text-center mb-20"
         >
-          <h2 className="text-3xl font-bold tracking-tight text-fd-foreground sm:text-4xl">
-            {t('title')}
+          <h2 className="text-4xl sm:text-5xl font-bold tracking-tight text-fd-foreground mb-4">
+            Purpose-Built for Production
           </h2>
-          <p className="mt-4 text-lg text-fd-muted-foreground">{t('subtitle')}</p>
+          <p className="text-xl text-fd-muted-foreground max-w-2xl mx-auto">
+            Everything you need to build scalable, maintainable web applications in Go.
+          </p>
         </motion.div>
 
-        {/* Grid */}
+        {/* Feature grid */}
         <motion.div
           variants={containerVariants}
           initial="hidden"
           whileInView="visible"
           viewport={{ once: true, margin: '-100px' }}
-          className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3"
+          className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-3"
         >
-          {featureKeys.map((key, idx) => {
-            const Icon = icons[idx];
-            return (
-              <motion.div key={key} variants={cardVariants}>
-                <div className="group relative rounded-xl border border-fd-border bg-fd-card p-6 hover:border-fd-ring transition-all duration-300">
-                  {/* Icon */}
-                  <div
-                    className={`mb-4 inline-flex h-12 w-12 items-center justify-center rounded-lg bg-gradient-to-br ${gradients[idx]} transition-all duration-300`}
-                  >
-                    <Icon className={`h-6 w-6 ${iconColors[idx]}`} />
+          {iconComponents.map(({ Icon, label, color }, idx) => (
+            <motion.div key={label} variants={cardVariants}>
+              <div className="group relative h-full rounded-2xl border border-fd-border bg-fd-card/50 backdrop-blur-sm p-8 hover:border-fd-ring hover:bg-fd-card transition-all duration-300">
+                {/* Background accent */}
+                <div className="absolute inset-0 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+
+                {/* Icon container */}
+                <div className="relative mb-6">
+                  <div className={`inline-flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-fd-card to-fd-muted p-3 group-hover:scale-110 transition-transform duration-300`}>
+                    <Icon className={`h-7 w-7 ${color}`} strokeWidth={1.5} />
                   </div>
-                  {/* Content */}
-                  <h3 className="mb-2 text-base font-semibold text-fd-foreground">
-                    {t(`${key}.title`)}
-                  </h3>
-                  <p className="text-sm leading-6 text-fd-muted-foreground">
-                    {t(`${key}.desc`)}
-                  </p>
                 </div>
-              </motion.div>
-            );
-          })}
+
+                {/* Content */}
+                <h3 className="relative text-lg font-semibold text-fd-foreground mb-3">
+                  {label}
+                </h3>
+                <p className="relative text-sm leading-relaxed text-fd-muted-foreground">
+                  {t(`${['di', 'exec', 'ws', 'goroutine', 'middleware', 'cache'][idx]}.desc`)}
+                </p>
+
+                {/* Bottom accent line */}
+                <div className="absolute bottom-0 left-0 h-0.5 w-0 bg-gradient-to-r from-blue-500 to-violet-500 group-hover:w-full transition-all duration-300 rounded-full" />
+              </div>
+            </motion.div>
+          ))}
         </motion.div>
       </div>
     </section>

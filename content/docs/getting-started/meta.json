@@ -1,4 +1,10 @@
 {
   "title": "Getting Started",
-  "pages": ["index", "installation", "quick-start"]
+  "pages": [
+    "index",
+    "architecture",
+    "transports",
+    "stages",
+    "quick-start"
+  ]
 }

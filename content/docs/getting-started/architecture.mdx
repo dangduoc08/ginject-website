@@ -1,0 +1,317 @@
+---
+title: Multi Pipelines, One Stage
+description: Understanding Ginject's core architectural pattern where multiple transports share a unified processing model.
+---
+
+# Multi Pipelines, One Stage
+
+This is Ginject's defining architectural pattern. It means **multiple transports (HTTP, WebSocket, and future protocols) all share the same processing stages**. You write your business logic once and it works everywhere.
+
+## The Problem It Solves
+
+Traditionally, supporting multiple protocols means building separate applications:
+
+```
+Your App
+├── HTTP Server (separate codebase)
+│   ├── Middleware
+│   ├── Auth logic
+│   └── Response formatting
+│
+└── WebSocket Server (separate codebase)
+    ├── Different middleware system
+    ├── Different auth logic
+    └── Different response formatting
+```
+
+Code duplication is inevitable. Your auth logic is different for HTTP and WebSocket. Middleware works differently. Exceptions are handled differently.
+
+Ginject solves this with **one stage model**:
+
+```
+Your App (single codebase)
+├── HTTP Pipeline ──┐
+├── WebSocket ─────────┐
+└── Future Transports ──┤
+                       │
+                       ▼
+                  One Stage Model
+                  ├── Middleware
+                  ├── Guard
+                  ├── Interceptor
+                  ├── Handler
+                  └── Exception Filter
+```
+
+## How It Works
+
+### Pipeline = Transport's Path
+
+A **pipeline** is how a request from a specific transport flows to the application core:
+
+- **HTTP Pipeline**: HTTP request → application core → HTTP response
+- **WebSocket Pipeline**: WebSocket event → application core → WebSocket message
+
+Each pipeline has transport-specific mechanics (HTTP status codes vs. event names), but once inside the application, all pipelines merge into the same stages.
+
+### Stage = Processing Step
+
+A **stage** is a processing step that runs for every request, regardless of transport:
+
+1. **Middleware** — logging, request enrichment, short-circuiting
+2. **Guard** — authentication and authorization
+3. **Interceptor** — pre/post processing, response transformation
+4. **Handler** — business logic
+5. **Exception Filter** — error handling
+
+Every handler runs through these five stages in the same order. The difference is what data is available and how responses are formatted.
+
+## Example: Auth Guard for Both HTTP and WebSocket
+
+The magic of "One Stage" is **code reuse**. Here's an auth guard that works for both transports:
+
+```go
+type AuthGuard struct {
+    ConfigService config.ConfigService
+}
+
+// HTTP version (checked by signature)
+func (g AuthGuard) CanActivate(c *ctx.HTTPContext) bool {
+    token := c.Header().Get("Authorization")
+    return isValidToken(token)
+}
+
+// WebSocket version (checked by signature)
+func (g AuthGuard) CanActivate(c *ctx.WSContext) bool {
+    token := c.WSPayload().Get("token")
+    return isValidToken(token)
+}
+
+func isValidToken(token string) bool {
+    // Your auth logic here — works for both HTTP and WebSocket
+    return token == "valid-secret"
+}
+```
+
+Now use it in both HTTP and WebSocket controllers:
+
+```go
+type UserController struct {
+    common.REST
+}
+
+func (c UserController) NewController() core.Controller {
+    c.BindGuard(AuthGuard{}, c.CREATE, c.DELETE)
+    return c
+}
+
+func (c UserController) READ_BY_ID() User { /* ... */ }
+
+func (c UserController) CREATE(body ginject.Body) User {
+    // AuthGuard runs before this
+}
+
+func (c UserController) DELETE() {
+    // AuthGuard runs before this
+}
+```
+
+```go
+type ChatController struct {
+    common.WS
+}
+
+func (c ChatController) NewController() core.Controller {
+    c.BindGuard(AuthGuard{}, c.MESSAGE)  // Same guard!
+    return c
+}
+
+func (c ChatController) MESSAGE(payload ginject.WSPayload) string {
+    // AuthGuard runs before this
+}
+```
+
+**Result**: One guard implementation, both HTTP and WebSocket protected. If you update the auth logic, it updates everywhere automatically.
+
+## Why This Matters
+
+### 1. Code Reuse
+
+Write business logic once:
+
+```go
+type RateLimiterGuard struct {
+    CacheService cache.CacheService
+}
+
+// Use in HTTP
+app.BindGlobalGuards(RateLimiterGuard{})
+
+// Same guard protects WebSocket too
+```
+
+### 2. Consistent Architecture
+
+All developers learn one pattern:
+
+- "How do I add auth?" → Use a Guard
+- "How do I log requests?" → Use Middleware
+- "How do I transform responses?" → Use an Interceptor
+
+This is true for HTTP, WebSocket, and any future transport.
+
+### 3. Easier Testing
+
+Test your business logic without worrying about HTTP or WebSocket specifics:
+
+```go
+// Test once, works everywhere
+func TestAuthGuard() {
+    guard := AuthGuard{ConfigService: mockConfig}
+    
+    // Test HTTP version
+    httpCtx := createMockHTTPContext()
+    assert.True(guard.CanActivate(httpCtx))
+    
+    // Test WebSocket version
+    wsCtx := createMockWSContext()
+    assert.True(guard.CanActivate(wsCtx))
+}
+```
+
+### 4. Easier Scaling
+
+When you need to add a new transport (gRPC, Server-Sent Events, etc.), you get the entire pipeline for free:
+
+```go
+// All these automatically work with your existing guards, middleware, interceptors
+type GRPCController struct {
+    common.GRPC  // New transport (hypothetical)
+}
+
+func (c GRPCController) GetUser(req *pb.GetUserRequest) *pb.User {
+    // AuthGuard runs first
+    // Middleware logs the request
+    // Interceptor can wrap the response
+    // Exception filters handle errors
+}
+```
+
+## Differences Between Transports
+
+While the stages are the same, the **data** available in each stage differs:
+
+### HTTP Handler Example
+
+```go
+func (c UserController) CREATE(
+    ctx ginject.HTTPContext,    // Request context
+    body ginject.Body,          // JSON body
+    param ginject.Param,        // Path parameters
+    query ginject.Query,        // Query string
+    header ginject.Header,      // HTTP headers
+) any {
+    // Available: HTTP-specific data
+}
+```
+
+### WebSocket Handler Example
+
+```go
+func (c ChatController) MESSAGE(
+    ctx ginject.WSContext,      // WebSocket context
+    payload ginject.WSPayload,  // Event data
+) string {
+    // Available: WebSocket-specific data
+    // No HTTP headers, params, etc.
+}
+```
+
+### Shared Across Both
+
+```go
+type SomeMiddleware struct {}
+
+func (m SomeMiddleware) Use(r *http.Request, w http.ResponseWriter, next ctx.Next) {
+    // Runs for HTTP
+}
+
+type SomeGuard struct {}
+
+func (g SomeGuard) CanActivate(c *ctx.HTTPContext) bool {
+    // Runs for HTTP
+}
+
+func (g SomeGuard) CanActivate(c *ctx.WSContext) bool {
+    // Runs for WebSocket
+}
+```
+
+## Complete Picture
+
+Here's a complete application showing both HTTP and WebSocket sharing the same architecture:
+
+```go
+// Guards
+type AuthGuard struct { }
+func (g AuthGuard) CanActivate(c *ctx.HTTPContext) bool { /* HTTP logic */ }
+func (g AuthGuard) CanActivate(c *ctx.WSContext) bool { /* WebSocket logic */ }
+
+// Middleware
+type RequestLogMiddleware struct { }
+func (m RequestLogMiddleware) Use(r *http.Request, w http.ResponseWriter, next ctx.Next) {
+    // Runs for both HTTP and WebSocket handshake
+}
+
+// HTTP Controller
+type UserController struct {
+    common.REST
+}
+func (c UserController) NewController() core.Controller {
+    c.BindGuard(AuthGuard{})
+    return c
+}
+func (c UserController) READ_BY_ID(param ginject.Param) User { /* ... */ }
+func (c UserController) CREATE(body ginject.Body) User { /* ... */ }
+
+// WebSocket Controller (same guards, middleware!)
+type ChatController struct {
+    common.WS
+}
+func (c ChatController) NewController() core.Controller {
+    c.BindGuard(AuthGuard{})  // Same auth guard
+    return c
+}
+func (c ChatController) MESSAGE(payload ginject.WSPayload) string { /* ... */ }
+
+// App setup
+var AppModule = func() *core.Module {
+    return core.ModuleBuilder().
+        Controllers(UserController{}, ChatController{}).
+        Build()
+}
+
+func main() {
+    app := core.New()
+    app.BindGlobalMiddlewares(RequestLogMiddleware{})
+    app.Create(AppModule)
+    app.Listen(3000)
+    // Now you have:
+    // - HTTP server at :3000 (UserController routes)
+    // - WebSocket server at /ws (ChatController events)
+    // - Both protected by AuthGuard
+    // - Both logged by RequestLogMiddleware
+}
+```
+
+## Summary
+
+| Aspect | Traditional | Ginject |
+|---|---|---|
+| Code organization | Separate HTTP and WS servers | Single application |
+| Auth logic | Duplicated for each transport | Shared guard |
+| Middleware | Different for each transport | Shared middleware |
+| Testing | Test each transport separately | Test once, works everywhere |
+| Adding new transport | Reimplement everything | Reuse everything |
+
+The key insight: **Your business logic should not care whether the request came from HTTP or WebSocket. Let the framework handle that.**
